@@ -128,7 +128,77 @@ class TriageBuscar(unittest.TestCase):  # 003 — T2: apto=False → deliver NO 
 
     def test_none_cae_a_plantilla(self):
         res, llamadas = self._run(None)
-        self.assertEqual(res, "plantilla"); self.assertIn("Soy", llamadas[0][2])
+        self.assertEqual(res, "plantilla"); self.assertIn("Me dedico a", llamadas[0][2])  # T3: sin nombre no hay "Soy"
+
+
+class DetectorIngles(unittest.TestCase):  # 005 — T2 (medido: 7/123 sin marcar, frases C1/B2)
+    def test_positivos(self):
+        for txt in ("This role requires applying in English", "Inglés C1", "English B2 or higher",
+                    "C1 English level or higher", "Fluent in English required", "Nivel de inglés avanzado"):
+            self.assertTrue(buscar.needs_english(txt), txt)
+
+    def test_negativos(self):
+        for txt in ("Atenderás English-speaking customers vía chatbot", "Automatización con n8n, 100% remoto, español",
+                    "Integración de APIs para pyme en Chile"):
+            self.assertFalse(buscar.needs_english(txt), txt)
+
+    def test_d24_elegible_auto(self):
+        self.assertFalse(buscar.elegible_auto({"en": True, "esp": False}))   # exige inglés, no LATAM → sin cupo
+        self.assertTrue(buscar.elegible_auto({"en": True, "esp": True}))     # bilingüe/LATAM → sí
+        self.assertTrue(buscar.elegible_auto({"en": False, "esp": False}))
+
+
+class PlantillaSinNombre(unittest.TestCase):  # 005 — T3
+    def test_sin_perfil(self):
+        p = proponer.via_plantilla("", "Bot n8n", "necesito n8n")
+        self.assertNotIn("freelancer", p); self.assertNotIn("Soy", p); self.assertIn("¡Hola! Me dedico a", p)
+
+    def test_con_nombre(self):
+        p = proponer.via_plantilla("cómo me presento: Ana", "Bot n8n", "necesito n8n")
+        self.assertIn("Soy Ana", p); self.assertTrue(p.endswith("— Ana"))
+
+
+class Pipeline(unittest.TestCase):  # 005 — T4 (DRY_RUN=1 en este proceso → log_pipeline NO escribe)
+    G = {"id": "X:1", "title": "t", "company": "C", "url": "u", "source": "X"}
+
+    def test_record(self):
+        r = proponer.pipeline_record(self.G, "proyecto", "n8n")
+        self.assertEqual((r["id"], r["sig"], r["tipo"], r["via"], r["fuente"]), ("X:1", "c|t", "proyecto", "n8n", "X"))
+        self.assertTrue(r["ts"].startswith("20"))
+
+    def test_log_dry_run_no_escribe(self):
+        import tempfile
+        f = Path(tempfile.mkdtemp()) / "p.jsonl"
+        self.assertFalse(proponer.log_pipeline(proponer.pipeline_record(self.G, "proyecto", "n8n"), f))
+        self.assertFalse(f.exists())
+
+    def test_log_escribe_sin_dry_run(self):
+        import tempfile, json
+        f = Path(tempfile.mkdtemp()) / "p.jsonl"
+        orig = proponer.DRY_RUN; proponer.DRY_RUN = False
+        try:
+            self.assertTrue(proponer.log_pipeline(proponer.pipeline_record(self.G, "empleo", "telegram"), f))
+        finally:
+            proponer.DRY_RUN = orig
+        self.assertEqual(json.loads(f.read_text().splitlines()[0])["id"], "X:1")
+
+
+class Metricas(unittest.TestCase):  # 005 — T4 metricas.py (funciones puras + tmpdir)
+    def test_enviadas_por_semana(self):
+        import tempfile, json, metricas
+        f = Path(tempfile.mkdtemp()) / "p.jsonl"
+        f.write_text("\n".join(json.dumps(r) for r in [
+            {"ts": "2026-09-14T10:00:00", "via": "n8n"}, {"ts": "2026-09-15T10:00:00", "via": "telegram"},
+            {"ts": "2026-09-21T10:00:00", "via": "n8n"}]) + "\n")
+        m = metricas.enviadas_por_semana(f)
+        self.assertEqual(m["2026-W38"], {"enviadas": 2, "n8n": 1, "telegram": 1}); self.assertEqual(m["2026-W39"]["enviadas"], 1)
+        self.assertEqual(metricas.enviadas_por_semana(f.parent / "nada.jsonl"), {})
+
+    def test_decisiones_por_semana(self):
+        import metricas
+        rows = [{"decision": "aprobada", "ts": "2026-09-18T04:00:00"}, {"decision": "descartada", "ts": "2026-09-18T05:00:00"},
+                {"decision": "vencida", "createdAt": "2026-09-19T05:00:00Z"}]
+        self.assertEqual(metricas.decisiones_por_semana(rows)["2026-W38"], {"aprobada": 1, "descartada": 1, "vencida": 1})
 
 
 if __name__ == "__main__":

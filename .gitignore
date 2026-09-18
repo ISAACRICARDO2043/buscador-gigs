@@ -16,3 +16,4 @@ node_modules/
 .triage.jsonl
 __pycache__/
 *.pyc
+.pipeline.jsonl

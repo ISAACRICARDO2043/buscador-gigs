@@ -37,7 +37,18 @@ ENGLISH_REQUIRED = ["english required", "fluent english", "english is a must",
                     "advanced english", "english proficiency", "must speak english",
                     "inglés indispensable", "ingles indispensable", "inglés avanzado",
                     "ingles avanzado", "nivel de inglés", "nivel de ingles",
-                    "english b2", "english c1", "proficient in english"]
+                    "english b2", "english c1", "proficient in english",
+                    # 005 (medido: 7/123 gigs sin marcar con estas frases, todos GetOnBrd)
+                    "requires applying in english", "applying in english", "apply in english",
+                    "c1 english", "b2 english", "inglés b2", "ingles b2", "inglés c1", "ingles c1",
+                    "fluent in english", "professional english", "english fluency",
+                    "advanced level of english"]
+
+
+def elegible_auto(g):
+    """D24: un gig que EXIGE inglés y no es LATAM/español-friendly no consume cupo de
+    auto-propuesta (va como aviso compacto con ⚠️)."""
+    return not (g.get("en") and not g.get("esp"))
 # Señales de que el gig acepta español / es LATAM-friendly.
 SPANISH_FRIENDLY = ["español", "spanish", "latam", "latin america", "latinoamérica",
                     "latinoamerica", "bilingual", "bilingüe", "hispano"]
@@ -255,7 +266,8 @@ def from_getonbrd():
             if a.get("remote_modality") == "hybrid" or not a.get("remote"):
                 continue  # solo 100% remoto: nada híbrido ni presencial
             title = a.get("title", "")
-            desc = re.sub(r"<[^>]+>", " ", a.get("description", "") or "")
+            # 005: los requisitos (C1 English…) viven en functions/desirable, no solo en description
+            desc = re.sub(r"<[^>]+>", " ", " ".join((a.get(k) or "") for k in ("description", "functions", "desirable")))
             s, w = find_hits(f"{title} {desc} {q}")
             # GetOnBrd ya filtró por la query → aceptamos aunque find_hits no matchee
             url_pub = (j.get("links") or {}).get("public_url", "")
@@ -263,6 +275,8 @@ def from_getonbrd():
                    "hybrid": "híbrido", "remote_zone": "remoto (zona)"}.get(
                        a.get("remote_modality", ""), "remoto" if a.get("remote") else "?")
             g = gig("GetOnBrd", jid, title, "", url_pub, loc, (s + w) or [q], geo_desc=desc)
+            if a.get("lang") == "en":  # 005: aviso publicado en inglés = "Requires applying in English" (badge de la UI)
+                g["en"], g["esp"] = True, False
             # board LATAM/español: si la geo no se reconoce, tratarla como ok (no bloqueado)
             if g["geo"] == "unknown":
                 g["geo"] = "ok"
@@ -366,8 +380,10 @@ def proponer_gig(g, perfil):
         texto, res = v["texto"], "entregado"
     else:
         texto, res = proponer.via_plantilla(perfil, g["title"], g.get("desc", "")), "plantilla"
-    if not proponer.deliver(g["title"], g["url"], texto, g["company"], g["source"]):
+    via = proponer.deliver(g["title"], g["url"], texto, g["company"], g["source"])
+    if not via:
         return "fallo"
+    proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"] if v else "plantilla", via))
     return res
 
 
@@ -414,6 +430,7 @@ def main():
           + (f", aviso de hasta {max_alerts}" if capped else "") + ".\n")
     propuestos = descartados = 0
     aviso_claude = False
+    intentos_auto = 0  # D24: el cupo AUTO_PROPOSE_TOP lo consumen solo los elegibles
     try:
         for i, g in enumerate(new):
             flag = "🌍" if g["geo"] == "ok" else "❓"
@@ -427,8 +444,9 @@ def main():
                 print(f"💼 {titulo_es}{dash}\n   {g['source']} | {flag} {loc_es}{esp}{en}{afin} | {', '.join(g['hits'][:5])}\n   {g['url']}\n")
             except BrokenPipeError:
                 pass
-            if i < auto_n:
+            if intentos_auto < auto_n and elegible_auto(g):
                 # los mejores: triage + redacción con claude -p (D12); apto → n8n/Telegram; no apto → nada
+                intentos_auto += 1
                 res = proponer_gig(g, perfil)
                 if res == "entregado":
                     propuestos += 1

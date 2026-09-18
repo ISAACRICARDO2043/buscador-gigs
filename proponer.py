@@ -73,9 +73,12 @@ def price_hint(text):
 
 TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "sonnet").strip()   # modelo de `claude -p` (D12)
 TRIAGE_FILE = HERE / ".triage.jsonl"                                 # veredictos, gitignored
+PIPELINE_FILE = Path(os.environ.get("PIPELINE_FILE") or (HERE / ".pipeline.jsonl"))   # entregas (005, D21a), gitignored
+GIGS_TEST = os.environ.get("GIGS_TEST", "").strip().lower() in ("1", "true", "yes")
 N8N_WEBHOOK = os.environ.get("N8N_WEBHOOK_URL", "").strip()  # capa de entrega/aprobación
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()  # entrega directa (fallback de n8n)
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TG_CHAT_TEST = os.environ.get("TELEGRAM_CHAT_ID_TEST", "").strip()
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")  # LEY DEL CANAL REAL: sin red ni escritura
 
 
@@ -219,6 +222,25 @@ def registrar_triage(titulo, fuente, veredicto, motor):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def pipeline_record(g, tipo, via):
+    """Fila del registro de entregas (D21a): qué propuesta salió, por dónde. Pura."""
+    return {"ts": datetime.now().isoformat(timespec="seconds"), "id": g.get("id", ""),
+            "sig": f"{(g.get('company') or '').strip().lower()}|{(g.get('title') or '').strip().lower()}",
+            "titulo": (g.get("title") or "")[:120], "url": g.get("url", ""), "fuente": g.get("source", ""),
+            "tipo": tipo, "via": via}
+
+
+def log_pipeline(rec, path=None):
+    """Append de una fila al .pipeline.jsonl. DRY_RUN=1 no escribe."""
+    if DRY_RUN:
+        print(f"[dry-run] pipeline {rec.get('titulo', '')[:80]}", file=sys.stderr)
+        return False
+    p = Path(path) if path else PIPELINE_FILE
+    with p.open("a") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return True
+
+
 def redactar(perfil, titulo, texto, fuente=""):
     """Veredicto de triage + texto. dict {tipo, apto, motivo, texto} con motor claude, o None
     (DRY_RUN / claude no disponible / falló) para que el caller caiga a la plantilla (D13)."""
@@ -236,17 +258,19 @@ def via_plantilla(perfil, titulo, texto):
     t = (titulo + " " + texto).lower()
     matched = sorted({v for k, v in SKILLS.items() if k in t})
     skills_txt = ", ".join(matched) if matched else "automatización de procesos"
-    nombre = re.search(r"cómo me presento:\s*(.+)", perfil)
-    nombre = (nombre.group(1).strip() if nombre else "el freelancer").strip("<>")
+    nombre = re.search(r"cómo me presento:\s*(.+)", perfil or "")
+    nombre = (nombre.group(1).strip().strip("<>") if nombre else "")
     rango = price_hint(titulo + " " + texto)
-    return (f"¡Hola! Soy {nombre}, me dedico a {skills_txt}.\n\n"
+    saludo = f"¡Hola! Soy {nombre}, me dedico a {skills_txt}." if nombre else f"¡Hola! Me dedico a {skills_txt}."
+    firma = f"\n\n— {nombre}" if nombre else ""
+    return (f"{saludo}\n\n"
             f"Leí lo que necesitás (\"{titulo[:70]}\") y es justo lo que hago: te puedo armar "
             f"una solución que te saque ese trabajo manual de encima y te ahorre horas cada semana.\n\n"
             f"Trabajo rápido y te muestro avances concretos, no promesas. Puedo arrancar con una "
             f"versión funcionando chica para que veas resultado antes de seguir.\n\n"
             f"Como referencia, proyectos así suelen ir en {rango}.\n\n"
             f"¿Me contás un poco más del proceso actual y con qué herramientas trabajás hoy? "
-            f"Así te paso un plan concreto y el precio cerrado.\n\n— {nombre}")
+            f"Así te paso un plan concreto y el precio cerrado.{firma}")
 
 
 def log_interes(titulo, texto, arg):
@@ -275,8 +299,9 @@ def send_to_n8n(titulo, url, propuesta, empresa="", fuente=""):
     if DRY_RUN:
         print(f"[dry-run] n8n {titulo[:80]}", file=sys.stderr)
         return False
+    chat = TG_CHAT_TEST if (GIGS_TEST and TG_CHAT_TEST) else TG_CHAT   # D22: el chat viaja en el body, nunca en el workflow
     body = json.dumps({"titulo": titulo, "url": url, "propuesta": propuesta,
-                       "empresa": empresa, "fuente": fuente,
+                       "empresa": empresa, "fuente": fuente, "chat_id": chat,
                        "ts": datetime.now().isoformat(timespec="seconds")}).encode()
     req = urllib.request.Request(N8N_WEBHOOK, data=body,
                                  headers={"Content-Type": "application/json"})
@@ -346,6 +371,9 @@ def main():
           f"subirá al top los gigs parecidos.")
     url = arg if arg.startswith("http") else ""
     via = deliver(titulo, url, propuesta)
+    if via and via != "dry-run":
+        log_pipeline(pipeline_record({"id": "", "title": titulo, "url": url, "source": "manual"},
+                                     v["tipo"] if v else "plantilla", via))
     msg = {"n8n": "# 📤 enviada a n8n (Telegram + aprobación).",
            "telegram": "# 📤 enviada a tu Telegram (directo).",
            "dry-run": "# [dry-run] no se envió nada (DRY_RUN=1).",
