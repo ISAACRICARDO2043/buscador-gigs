@@ -1,0 +1,18 @@
+# Credenciales y estado privado — NUNCA salen del PC
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.memory/
+*.local
+perfil.md
+
+# Ruido
+node_modules/
+.DS_Store
+*.log
+.seen.json
+.intereses.json
+.triage.jsonl
+__pycache__/
+*.pyc

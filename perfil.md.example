@@ -1,0 +1,32 @@
+# Mi perfil para propuestas  (editá lo que esté entre <...>)
+
+> Este archivo alimenta a `proponer.py`. Cuanto más concreto, mejores propuestas.
+> No pongas datos sensibles acá si vas a subir el repo (este archivo NO se commitea por defecto).
+
+## Quién soy
+- Nombre / cómo me presento: <Tu nombre>
+- Una línea: Desarrollador de automatizaciones — conecto apps, armo bots y scrapers que ahorran horas de trabajo manual.
+- Idioma de trabajo: español (nativo). Inglés: <básico — preferir clientes en español>.
+- Ubicación / zona horaria: <Ciudad, zona horaria>
+
+## Qué ofrezco (servicios concretos)
+- Automatización de procesos con **n8n / Make / Zapier** (conectar CRM, email, WhatsApp, planillas).
+- **Bots de WhatsApp** (atención, recordatorios, captura de pedidos).
+- **Web scraping / monitoreo** (precios, stock, leads, menciones) con avisos automáticos.
+- Integraciones de **APIs** entre sistemas que no se hablan entre sí.
+- Mini-dashboards y reportes automáticos.
+
+## Pruebas / experiencia (rellená con casos reales)
+- <Ej: "Armé un bot que captura pedidos por WhatsApp y los carga a una planilla — al cliente le ahorró 2h/día.">
+- <Ej: "Scraper que monitorea precios de la competencia y avisa por Telegram.">
+- Portfolio / GitHub / demo: <link o "a pedido">
+
+## Comercial
+- Tarifa de referencia: <USD __/hora>  o  <por proyecto, desde USD __>
+- Forma de cobro: <Payoneer / transferencia / lo que uses>
+- Disponibilidad: <horas/semana>
+
+## Tono de las propuestas
+- Cercano y directo, sin relleno corporativo. Tutear.
+- Foco en el RESULTADO para el cliente (tiempo/plata que ahorra), no en la tecnología.
+- Corto: 5-8 líneas. Una pregunta al final para abrir conversación.
