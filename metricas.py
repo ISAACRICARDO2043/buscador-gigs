@@ -3,7 +3,8 @@
 
   python3 metricas.py                 # enviadas por semana desde .pipeline.jsonl (o PIPELINE_FILE)
   N8N_API_URL=… N8N_API_KEY=… python3 metricas.py   # + aprobadas/descartadas/vencidas desde la Data Table gigs_pipeline
-  M700_SSH=isaac@host python3 metricas.py           # idem, leyendo la Data Table vía ssh (la key vive en el M700)
+  M700_SSH=user@host python3 metricas.py            # idem, leyendo la Data Table vía ssh; en el host la key se toma
+                                                    # de N8N_ENV_FILE (default ~/.config/n8n-api.env, línea N8N_API_KEY=)
 Nunca imprime la key. Exit 0 siempre que el jsonl sea legible.
 """
 import json, os, subprocess, sys, urllib.request
@@ -67,7 +68,8 @@ def _rows_api(base, key):
 
 
 def _rows_ssh(host):
-    cmd = ("set -a; . /opt/fabrica/.env; set +a; python3 - <<'PY'\n"
+    envf = os.environ.get("N8N_ENV_FILE", "~/.config/n8n-api.env")
+    cmd = (f"set -a; . {envf}; set +a; python3 - <<'PY'\n"
            "import json,os,urllib.request\nh={'X-N8N-API-KEY':os.environ['N8N_API_KEY']};b='http://127.0.0.1:5678'\n"
            "t=json.load(urllib.request.urlopen(urllib.request.Request(b+'/api/v1/data-tables?limit=250',headers=h)))\n"
            "i=next((x['id'] for x in t['data'] if x['name']=='gigs_pipeline'),None)\n"
