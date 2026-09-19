@@ -354,5 +354,24 @@ class ContratistaPais(unittest.TestCase):  # 010 — A1/A4/A6
         self.assertIn("chilenas con contrato local: 2 · puente: 1", txt)
 
 
+class PaisDuro(unittest.TestCase):  # 011 — pais_empleador desde el dato de la fuente, no del LLM
+    def test_fuente_gana(self):
+        self.assertEqual(proponer.pais_duro(["Chile"], "desconocido"), "Chile")
+        self.assertEqual(proponer.pais_duro(["México", "Chile"], "Perú"), "México")
+
+    def test_sin_dato_usa_llm(self):
+        self.assertEqual(proponer.pais_duro([], "Colombia"), "Colombia")
+        self.assertEqual(proponer.pais_duro(None, ""), "desconocido")
+
+    def test_redactar_aplica_dato_duro(self):
+        orig = proponer.via_claude
+        proponer.via_claude = lambda *a, **k: {"tipo": "empleo", "apto": True, "motivo": "m", "texto": "t", "huecos": [], "pais_empleador": "desconocido", "contratista_ok": False}
+        try:
+            v = proponer.redactar("p", "t", "x", "GetOnBrd", pais=["Chile"])
+        finally:
+            proponer.via_claude = orig
+        self.assertEqual(v["pais_empleador"], "Chile")
+
+
 if __name__ == "__main__":
     unittest.main()

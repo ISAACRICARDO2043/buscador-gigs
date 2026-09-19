@@ -317,10 +317,20 @@ def log_pipeline(rec, path=None):
     return True
 
 
+def pais_duro(countries, pais_llm="desconocido"):
+    """011: el país del empleador sale del DATO DURO de la fuente (GetOnBrd `countries`) cuando existe; el LLM solo
+    rellena si la fuente no lo trae. Pura."""
+    paises = [str(x).strip() for x in (countries or []) if str(x).strip()]
+    return paises[0] if paises else (pais_llm or "desconocido")
+
+
 def redactar(perfil, titulo, texto, fuente="", pais=None):
     """Veredicto de triage + texto. dict {tipo, apto, motivo, texto, huecos, pais_empleador, contratista_ok} con motor
-    claude, o None (DRY_RUN / claude no disponible / falló) para que el caller caiga a la plantilla (D13)."""
+    claude, o None (DRY_RUN / claude no disponible / falló) para que el caller caiga a la plantilla (D13).
+    pais (lista de la fuente) gana sobre pais_empleador del LLM."""
     v = via_claude(perfil, titulo, texto, fuente, pais=pais)
+    if v is not None:
+        v["pais_empleador"] = pais_duro(pais, v.get("pais_empleador"))
     registrar_triage(titulo, fuente, v, "claude" if v else "plantilla")
     return v
 
