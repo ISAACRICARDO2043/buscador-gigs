@@ -294,5 +294,29 @@ class HeaderWebhook(unittest.TestCase):  # 008 — T5a (D5): request capturado, 
         self.assertFalse(req.has_header("X-gigs-token"))
 
 
+class Pendientes(unittest.TestCase):  # 009 — T2 (fixture sintética, sin ids reales)
+    FX = Path(__file__).resolve().parent / "fixtures" / "pendientes-4.json"
+
+    def test_cuenta_4_con_antiguedad(self):
+        import metricas, json
+        from datetime import datetime, timezone
+        p = metricas.contar_pendientes(json.load(open(self.FX)), ahora=datetime(2026, 9, 19, 2, 0, tzinfo=timezone.utc))
+        self.assertEqual(p["n"], 4)
+        self.assertEqual(p["items"][0]["titulo"], "Caso sintético A"); self.assertAlmostEqual(p["items"][0]["horas"], 14.0, places=1)
+        self.assertEqual(p["items"][-1]["titulo"], "(sin título)")
+
+    def test_api_no_disponible_es_sd_no_cero(self):
+        import metricas, resumen
+        self.assertIsNone(metricas.contar_pendientes(None))
+        self.assertIn("Pendientes de tu tap: s/d", resumen.resumir([], {"aprobada": 1}, None))
+        self.assertNotIn("Pendientes de tu tap: 0", resumen.resumir([], {"aprobada": 1}, None))
+
+    def test_resumen_lista_pendientes(self):
+        import metricas, resumen, json
+        p = metricas.contar_pendientes(json.load(open(self.FX)))
+        txt = resumen.resumir([], {"aprobada": 1, "vencida": 2}, p)
+        self.assertIn("Pendientes de tu tap: 4", txt); self.assertIn("⏳ Caso sintético A", txt); self.assertIn("vencidas 2", txt)
+
+
 if __name__ == "__main__":
     unittest.main()

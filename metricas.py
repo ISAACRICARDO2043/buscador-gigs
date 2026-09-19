@@ -9,7 +9,7 @@ Nunca imprime la key. Exit 0 siempre que el jsonl sea legible.
 """
 import json, os, subprocess, sys, urllib.request
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -85,6 +85,81 @@ def huecos_informe(path=PIPELINE, hoy=None, dias=30, umbral=3):
     return c
 
 
+WF_GIGS = os.environ.get("N8N_WORKFLOW_ID", "8QVZrP0UuDCNA13b")   # id del workflow de propuestas (no es secreto)
+
+
+def contar_pendientes(ejecuciones, ahora=None):
+    """Ejecuciones `waiting` del workflow → {"n": N, "items": [{id, titulo, horas}]} ordenadas por antigüedad. Pura.
+    ejecuciones: lista de dicts {id, startedAt (ISO), titulo (opcional)}. None → s/d (API no disponible)."""
+    if ejecuciones is None:
+        return None
+    ahora = ahora or datetime.now(timezone.utc)
+    items = []
+    for e in ejecuciones:
+        try:
+            t0 = datetime.fromisoformat(str(e.get("startedAt", "")).replace("Z", "+00:00"))
+            if t0.tzinfo is None:
+                t0 = t0.replace(tzinfo=timezone.utc)
+            horas = round((ahora - t0).total_seconds() / 3600, 1)
+        except Exception:
+            horas = None
+        items.append({"id": str(e.get("id", "")), "titulo": (e.get("titulo") or "(sin título)")[:80], "horas": horas})
+    items.sort(key=lambda x: -(x["horas"] or 0))
+    return {"n": len(items), "items": items}
+
+
+def _pendientes_api(base, key):
+    """GET executions waiting del workflow + título desde el body del webhook (includeData). None si la API no responde."""
+    h = {"X-N8N-API-KEY": key}
+    try:
+        d = json.load(urllib.request.urlopen(urllib.request.Request(f"{base}/api/v1/executions?status=waiting&workflowId={WF_GIGS}&limit=100", headers=h), timeout=20))
+    except Exception:
+        return None
+    out = []
+    for e in d.get("data", []):
+        titulo = ""
+        try:
+            full = json.load(urllib.request.urlopen(urllib.request.Request(f"{base}/api/v1/executions/{e['id']}?includeData=true", headers=h), timeout=20))
+            run = (full.get("data") or {}).get("resultData", {}).get("runData", {})
+            titulo = run["Recibe propuesta"][0]["data"]["main"][0][0]["json"]["body"].get("titulo", "")
+        except Exception:
+            pass
+        out.append({"id": e["id"], "startedAt": e.get("startedAt", ""), "titulo": titulo})
+    return out
+
+
+def _pendientes_ssh(host):
+    envf = os.environ.get("N8N_ENV_FILE", "~/.config/n8n-api.env")
+    cmd = (f"set -a; . {envf}; set +a; N8N_API_URL=http://127.0.0.1:5678 python3 - <<'PY'\n"
+           "import json,os,sys; sys.path.insert(0, os.path.expanduser('~/proyectos-cliente/buscador-gigs')); import metricas\n"
+           "print(json.dumps(metricas._pendientes_api(os.environ['N8N_API_URL'], os.environ['N8N_API_KEY'])))\nPY")
+    try:
+        r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", host, cmd], capture_output=True, text=True, timeout=90)
+        return json.loads(r.stdout or "null")
+    except Exception:
+        return None
+
+
+def pendientes():
+    """Pendientes vía API (N8N_API_*) o ssh (M700_SSH); None = s/d."""
+    if os.environ.get("N8N_API_URL") and os.environ.get("N8N_API_KEY"):
+        return contar_pendientes(_pendientes_api(os.environ["N8N_API_URL"].rstrip("/"), os.environ["N8N_API_KEY"]))
+    if os.environ.get("M700_SSH"):
+        return contar_pendientes(_pendientes_ssh(os.environ["M700_SSH"]))
+    return None
+
+
+def pendientes_informe(p=None):
+    p = pendientes() if p is None else p
+    print("# pendientes de tu tap (ejecuciones waiting del workflow)")
+    if p is None:
+        print("  pendientes: s/d (sin acceso a la API de n8n)")
+        return
+    print(f"  pendientes: {p['n']}")
+    for it in p["items"][:10]:
+        print(f"  - {it['titulo']} · {it['horas']} h")
+
+
 def _rows_api(base, key):
     h = {"X-N8N-API-KEY": key}
     tabs = json.load(urllib.request.urlopen(urllib.request.Request(f"{base}/api/v1/data-tables?limit=250", headers=h), timeout=20))
@@ -116,6 +191,10 @@ def _rows_ssh(host):
 def main():
     if "--huecos" in sys.argv:
         huecos_informe()
+        return
+    if "--pendientes" in sys.argv:
+        f = os.environ.get("PENDIENTES_FIXTURE")           # gates: fixture sintética en vez de la API
+        pendientes_informe(contar_pendientes(json.load(open(f))) if f else None)
         return
     env = enviadas_por_semana()
     print(f"# enviadas (desde {PIPELINE.name})")

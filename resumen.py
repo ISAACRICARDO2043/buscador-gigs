@@ -45,8 +45,8 @@ def filas_del_dia(path, dia):
     return out
 
 
-def resumir(filas, decisiones=None):
-    """Texto del resumen a partir de las filas del día (+ decisiones del usuario opcionales). Pura."""
+def resumir(filas, decisiones=None, pendientes=None):
+    """Texto del resumen a partir de las filas del día (+ decisiones opcionales + pendientes: dict o None = s/d). Pura."""
     estados = Counter(r.get("estado", "entregado") for r in filas)
     motivos = Counter(r.get("motivo", "") for r in filas if r.get("estado") == "prefiltro")
     aptos = [r for r in filas if r.get("estado") in ("entregado", "entregado_plantilla")]
@@ -58,6 +58,12 @@ def resumir(filas, decisiones=None):
         lineas.append(f"✅ {r.get('titulo', '')[:70]} ({r.get('fuente', '')})")
     if decisiones is not None:
         lineas.append(f"tus decisiones: aprobadas {decisiones.get('aprobada', 0)} · descartadas {decisiones.get('descartada', 0)} · vencidas {decisiones.get('vencida', 0)}")
+    if pendientes is None:
+        lineas.append("Pendientes de tu tap: s/d")
+    else:
+        lineas.append(f"Pendientes de tu tap: {pendientes['n']}")
+        for it in pendientes["items"][:5]:
+            lineas.append(f"⏳ {it['titulo'][:70]} ({it['horas']} h)")
     return "\n".join(lineas)
 
 
@@ -94,7 +100,10 @@ def main():
     _load_env()
     dia = sys.argv[1] if len(sys.argv) > 1 else datetime.now(TZ).strftime("%Y-%m-%d")
     filas = filas_del_dia(PIPELINE, dia)
-    texto = resumir(filas, decisiones_del_dia(dia))
+    import metricas
+    fx = os.environ.get("PENDIENTES_FIXTURE")
+    pend = metricas.contar_pendientes(json.load(open(fx))) if fx else metricas.pendientes()
+    texto = resumir(filas, decisiones_del_dia(dia), pend)
     print(texto)
     enviar(texto)
 
