@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import filtros  # noqa: E402
 
-FIX_REAL = Path(__file__).resolve().parent / "fixtures" / "triage" / "casos.jsonl"          # privado (etiquetas de Isaac)
+FIX_REAL = Path(__file__).resolve().parent / "fixtures" / "triage" / "casos.jsonl"          # privado (etiquetas reales del usuario)
 FIX_PUB = Path(__file__).resolve().parent / "fixtures" / "triage" / "casos-publico.jsonl"   # sintético (espejo público)
 FIX = FIX_REAL if FIX_REAL.exists() else FIX_PUB
 
@@ -92,14 +92,14 @@ class FixturesPublicas(unittest.TestCase):  # casos sintéticos (viajan al espej
 
 
 class Fixtures(unittest.TestCase):
-    def test_no_aptas_de_isaac_caen_por_regla(self):
+    def test_no_aptas_reales_caen_por_regla(self):
         for c in cargar_casos():
             if c["etiqueta"] == "no_apta" and c["origen"] == "isaac":
                 ok, motivo = filtros.prefiltro(as_gig(c))
                 self.assertFalse(ok, c["id"]); self.assertIn(motivo, ("ingles", "seniority", "rol", "sin_hit", "presencial"), c["id"])
 
-    @unittest.skipUnless(FIX_REAL.exists(), "sin fixtures reales (espejo público): el assert duro solo corre en el privado")
-    def test_ASSERT_DURO_ninguna_apta_de_isaac_rechazada(self):
+    @unittest.skipUnless(FIX_REAL.exists(), "sin fixtures reales (espejo público): el assert duro solo corre en el repo privado")
+    def test_ASSERT_DURO_ninguna_apta_real_rechazada(self):
         for c in cargar_casos():
             if c["etiqueta"] == "apta" and c["origen"] == "isaac" and not c.get("excluido_eval"):
                 self.assertEqual(filtros.prefiltro(as_gig(c)), (True, ""), c["id"])
