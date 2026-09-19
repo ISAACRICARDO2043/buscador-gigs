@@ -17,3 +17,4 @@ node_modules/
 __pycache__/
 *.pyc
 .pipeline.jsonl
+eval/pipeline-dry.jsonl

@@ -9,22 +9,14 @@ Config por env (.env):
 import os, sys, json, html, re, time, socket, urllib.request, urllib.parse
 from pathlib import Path
 import proponer  # auto-redactar y entregar propuestas de los mejores gigs
+import filtros   # prefiltro determinista (007)
 
 HERE = Path(__file__).resolve().parent
 SEEN_FILE = HERE / ".seen.json"
 INTERESES_FILE = HERE / ".intereses.json"   # lo escribe proponer.py (👍 implícito)
 UA = "gig-finder/1.0 (personal job search)"
 
-STRONG = ["n8n", "zapier", "make.com", "integromat", "automation", "automate",
-          "chatbot", "whatsapp", "scraping", "scraper", "web scraping", "webhook",
-          "no-code", "nocode", "low-code", "airtable", "api integration",
-          "rpa", "process automation", "data pipeline", "integration engineer",
-          # señales en español (para fuentes hispanas como GetOnBrd)
-          "automatización", "automatizar", "automatizacion", "raspado web",
-          "integración api", "integracion api", "bot de whatsapp"]
-STRONG += [k.strip().lower() for k in os.environ.get("GIG_KEYWORDS_EXTRA", "").split(",") if k.strip()]
-WEAK = ["workflow", "bot", "integration", "pipeline", "automated",
-        "flujo de trabajo", "integración", "integracion"]
+from filtros import STRONG, WEAK, _has, prefiltro  # 007: keywords y prefiltro viven en filtros.py
 
 # Bloquear lo PRESENCIAL/híbrido (el usuario trabaja 100% remoto desde LATAM; ver GEO_OK).
 ONSITE_BLOCK = ["on-site", "on site", "onsite", "in-office", "in office", "in the office",
@@ -135,12 +127,6 @@ def fetch_text(url):
         return r.read().decode("utf-8", "replace")
 
 
-def _has(k, t):
-    if k.isalpha() and len(k) <= 5:
-        return re.search(r"(?<![a-z])" + re.escape(k) + r"(?![a-z])", t) is not None
-    return k in t
-
-
 def find_hits(text):
     t = (text or "").lower()
     return [k for k in STRONG if _has(k, t)], [k for k in WEAK if _has(k, t)]
@@ -156,7 +142,8 @@ def gig(source, jid, title, company, url, location, hits, geo_desc=""):
             "source": source, "location": (location or "?").strip() or "?",
             "geo": geo_status(location, title, geo_desc), "hits": hits,
             "desc": (geo_desc or "")[:4000],  # para auto-redactar la propuesta
-            "esp": spanish_friendly(blob, source), "en": needs_english(blob)}
+            "esp": spanish_friendly(blob, source), "en": needs_english(blob),
+            "lang": ""}  # idioma del aviso si la fuente lo da (GetOnBrd); "" = heurística en filtros
 
 
 def sig_of(g):
@@ -263,22 +250,26 @@ def from_getonbrd():
                 continue
             local_seen.add(jid)
             a = j.get("attributes", {})
-            if a.get("remote_modality") == "hybrid" or not a.get("remote"):
-                continue  # solo 100% remoto: nada híbrido ni presencial
+            url_pub = (j.get("links") or {}).get("public_url", "")
+            modality = a.get("remote_modality") or ("" if a.get("remote") else "no_remote")
+            santiago = url_pub.rstrip("/").endswith("-santiago")   # H5 (007): presencial/híbrido EN Santiago sí sirve
+            if (modality in ("hybrid", "no_remote") or not a.get("remote")) and not santiago:
+                continue  # presencial/híbrido fuera de Santiago: no
             title = a.get("title", "")
             # 005: los requisitos (C1 English…) viven en functions/desirable, no solo en description
             desc = re.sub(r"<[^>]+>", " ", " ".join((a.get(k) or "") for k in ("description", "functions", "desirable")))
             s, w = find_hits(f"{title} {desc} {q}")
-            # GetOnBrd ya filtró por la query → aceptamos aunque find_hits no matchee
-            url_pub = (j.get("links") or {}).get("public_url", "")
-            loc = {"fully_remote": "100% remoto", "remote_local": "remoto (local)",
-                   "hybrid": "híbrido", "remote_zone": "remoto (zona)"}.get(
-                       a.get("remote_modality", ""), "remoto" if a.get("remote") else "?")
+            # GetOnBrd ya filtró por la query → se acepta aunque find_hits no matchee; el prefiltro (sin_hit) lo mide después (H3)
+            loc = {"fully_remote": "100% remoto", "remote_local": "remoto (local)", "hybrid": "híbrido",
+                   "remote_zone": "remoto (zona)", "no_remote": "presencial"}.get(modality, "remoto" if a.get("remote") else "?")
+            if santiago:
+                loc += " · Santiago"
             g = gig("GetOnBrd", jid, title, "", url_pub, loc, (s + w) or [q], geo_desc=desc)
+            g["lang"] = "" if a.get("lang") in (None, "", "lang_not_specified") else a.get("lang")
             if a.get("lang") == "en":  # 005: aviso publicado en inglés = "Requires applying in English" (badge de la UI)
                 g["en"], g["esp"] = True, False
             # board LATAM/español: si la geo no se reconoce, tratarla como ok (no bloqueado)
-            if g["geo"] == "unknown":
+            if g["geo"] == "unknown" or (santiago and modality in ("hybrid", "no_remote")):
                 g["geo"] = "ok"
             if g["geo"] != "block":
                 out.append(g)
@@ -355,13 +346,14 @@ def load_seen():
 
 
 def tg_send(text):
-    if not (TG_TOKEN and TG_CHAT):
+    if not TG_TOKEN:
         return False
-    if DRY_RUN:
+    modo, chat = proponer.destino(os.environ)   # D4 (008): prod|test|dry
+    if modo == "dry" or not chat:
         print(f"[dry-run] telegram {text.splitlines()[0][:80]}", file=sys.stderr)
         return False
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"}).encode()
+    data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode()
     try:
         with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20) as r:
             return r.status == 200
@@ -375,15 +367,19 @@ def proponer_gig(g, perfil):
     apto=false → no se entrega. redactar()=None (claude ausente/falló/DRY_RUN) → plantilla (D13)."""
     v = proponer.redactar(perfil, g["title"], g.get("desc", ""), g["source"])
     if v is not None and not v["apto"]:
+        proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"], "", estado="triage_no_apto", motivo=v["motivo"], huecos=v.get("huecos")))
         return "descartado"
     if v is not None:
         texto, res = v["texto"], "entregado"
     else:
-        texto, res = proponer.via_plantilla(perfil, g["title"], g.get("desc", "")), "plantilla"
+        texto, res = proponer.via_plantilla(perfil, g["title"], g.get("desc", ""), tipo="empleo" if g["source"] != "prueba" else "proyecto"), "plantilla"
     via = proponer.deliver(g["title"], g["url"], texto, g["company"], g["source"])
     if not via:
+        proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"] if v else "plantilla", "", estado="fallo_entrega", motivo="deliver=False"))
         return "fallo"
-    proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"] if v else "plantilla", via))
+    proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"] if v else "plantilla", via,
+                                                   estado="entregado" if v else "entregado_plantilla", motivo=(v or {}).get("motivo", ""),
+                                                   huecos=(v or {}).get("huecos")))
     return res
 
 
@@ -411,7 +407,7 @@ def main():
     gigs.sort(key=lambda g: (-g["esp"], g["en"], -g["afin"], -(g["geo"] == "ok"),
                              -sum(1 for h in g["hits"] if h in STRONG)))
     seen_ids, seen_sigs = load_seen()
-    new = []
+    new, sig_de = [], {}
     for g in gigs:
         if g["id"] in seen_ids:
             continue
@@ -421,57 +417,52 @@ def main():
             continue
         new.append(g)
         seen_sigs.add(sig)
-    max_alerts = int(os.environ.get("MAX_ALERTS", "20") or "20")
-    auto_n = int(os.environ.get("AUTO_PROPOSE_TOP", "5") or "5")  # 0 = desactivar auto-propuesta
-    perfil = proponer.load_perfil() if auto_n else ""
-    capped = len(new) > max_alerts
-    print(f"{len(gigs)} gigs cobrables (worldwide/LATAM/Chile), {len(new)} nuevos"
-          + (f" — auto-propuesta para los {min(auto_n, len(new))} mejores" if auto_n and new else "")
-          + (f", aviso de hasta {max_alerts}" if capped else "") + ".\n")
-    propuestos = descartados = 0
+        sig_de[g["id"]] = sig
+    triage_max = int(os.environ.get("TRIAGE_MAX", "15") or "15")   # 007: tope de llamadas a claude -p por corrida
+    perfil = proponer.load_perfil()
+    print(f"{len(gigs)} gigs cobrables (worldwide/LATAM/Chile), {len(new)} nuevos — prefiltro + triage (máx {triage_max}).\n")
+    aptos = descartados = prefiltrados = pendientes = 0
+    por_motivo = {}
     aviso_claude = False
-    intentos_auto = 0  # D24: el cupo AUTO_PROPOSE_TOP lo consumen solo los elegibles
+    triados = 0
     try:
-        for i, g in enumerate(new):
-            flag = "🌍" if g["geo"] == "ok" else "❓"
-            esp = " 🗣️español" if g["esp"] else ""
-            en = " ⚠️requiere-inglés" if g["en"] else ""
-            afin = " ⭐afín" if g["afin"] else ""
-            titulo_es = translate_es(g["title"])
-            loc_es = translate_es(g["location"])
-            dash = f" — {g['company']}" if g["company"] else ""
+        for g in new:
+            ok, motivo = prefiltro(g)                       # 007 opción A: determinista antes del LLM
+            if not ok:
+                prefiltrados += 1
+                por_motivo[motivo] = por_motivo.get(motivo, 0) + 1
+                proponer.log_pipeline(proponer.pipeline_record(g, "", "", estado="prefiltro", motivo=motivo))
+                seen_ids.add(g["id"])
+                continue
+            if triados >= triage_max:
+                pendientes += 1                              # excede el tope: NO se marca visto, entra en la próxima corrida
+                seen_sigs.discard(sig_de[g["id"]])
+                continue
+            triados += 1
             try:
-                print(f"💼 {titulo_es}{dash}\n   {g['source']} | {flag} {loc_es}{esp}{en}{afin} | {', '.join(g['hits'][:5])}\n   {g['url']}\n")
+                print(f"💼 {g['title']} — {g['company'] or g['source']} | {g['location']} | {', '.join(g['hits'][:4])}\n   {g['url']}")
             except BrokenPipeError:
                 pass
-            if intentos_auto < auto_n and elegible_auto(g):
-                # los mejores: triage + redacción con claude -p (D12); apto → n8n/Telegram; no apto → nada
-                intentos_auto += 1
-                res = proponer_gig(g, perfil)
-                if res == "entregado":
-                    propuestos += 1
-                elif res == "descartado":
-                    descartados += 1
-                elif res == "plantilla" and not proponer.claude_disponible() and not aviso_claude:
-                    aviso_claude = True   # D13: un aviso por corrida
-                    tg_send(f"⚠️ claude -p no disponible en {HOST}: renová el login (propuestas por plantilla).")
-                time.sleep(1)
-            elif TG_TOKEN and TG_CHAT and i < max_alerts:
-                # el resto: aviso compacto
-                cdash = f" — {html.escape(g['company'])}" if g["company"] else ""
-                tg_send(f"💼 <b>{html.escape(titulo_es or '')}</b>{cdash}\n"
-                        f"{g['source']} | {flag} {html.escape(loc_es)}{esp}{en}{afin} | {', '.join(g['hits'][:5])}\n{g['url']}")
-                time.sleep(1)
+            res = proponer_gig(g, perfil)
+            if res == "entregado":
+                aptos += 1
+            elif res == "descartado":
+                descartados += 1
+            elif res == "plantilla" and not proponer.claude_disponible() and not aviso_claude:
+                aviso_claude = True   # D13: un aviso por corrida
+                tg_send(f"⚠️ claude -p no disponible en {HOST}: renová el login (propuestas por plantilla).")
             seen_ids.add(g["id"])
+            time.sleep(1)
     finally:
         # guardar SIEMPRE el estado, aunque falle stdout (BrokenPipe) o un envío — salvo en DRY_RUN
         if DRY_RUN:
             print(f"[dry-run] .seen.json intacto ({len(new)} nuevos no marcados)", file=sys.stderr)
         else:
             SEEN_FILE.write_text(json.dumps({"ids": sorted(seen_ids), "sigs": sorted(seen_sigs)}))
-    if propuestos or descartados:
-        print(f"\n📤 {propuestos} apto / {descartados} descartados por triage — "
-              + ("[dry-run] NO enviada(s)." if DRY_RUN else "aptas enviadas para aprobar."))
+    resumen_motivos = ", ".join(f"{k}={v}" for k, v in sorted(por_motivo.items())) or "-"
+    print(f"\n📤 {aptos} apto / {descartados} descartados por triage / {prefiltrados} por prefiltro ({resumen_motivos})"
+          + (f" / {pendientes} quedan para la próxima corrida" if pendientes else "")
+          + (" — [dry-run] NO enviada(s)." if DRY_RUN else " — aptos enviados para aprobar."))
     if not (TG_TOKEN and TG_CHAT) and not proponer.N8N_WEBHOOK:
         print("(Telegram/n8n OFF — configurá TELEGRAM_* o N8N_WEBHOOK_URL en el .env)")
 

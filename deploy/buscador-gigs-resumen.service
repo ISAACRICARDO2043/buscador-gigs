@@ -1,0 +1,11 @@
+[Unit]
+Description=buscador-gigs — resumen diario a Telegram (007)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/proyectos-cliente/buscador-gigs
+ExecStart=/usr/bin/python3 %h/proyectos-cliente/buscador-gigs/resumen.py
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=N8N_API_URL=http://127.0.0.1:5678
+EnvironmentFile=-%h/.config/n8n-api.env

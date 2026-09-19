@@ -1,0 +1,11 @@
+[Unit]
+Description=buscador-gigs — radar de gigs + triage/redacción con claude -p (D14)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/proyectos-cliente/buscador-gigs
+ExecStart=%h/proyectos-cliente/buscador-gigs/run-buscar.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LANG=es_CL.UTF-8
+TimeoutStartSec=20min

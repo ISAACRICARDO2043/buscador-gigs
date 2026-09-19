@@ -50,6 +50,41 @@ def decisiones_por_semana(rows):
     return {k: dict(v) for k, v in sorted(out.items())}
 
 
+def contar_huecos(filas, hoy, dias=30, umbral=3):
+    """{herramienta: n} de las filas entregado*/triage_no_apto de los últimos `dias` (D3, 008). Pura.
+    Filas sin campo `huecos` cuentan 0. `hoy` = 'YYYY-MM-DD'."""
+    from datetime import date, timedelta
+    desde = (date.fromisoformat(hoy) - timedelta(days=dias)).isoformat()
+    c = Counter()
+    for r in filas:
+        if not (r.get("estado") or "entregado").startswith(("entregado", "triage_no_apto")):
+            continue
+        if (r.get("ts") or "")[:10] < desde:
+            continue
+        for h in r.get("huecos") or []:
+            if isinstance(h, str) and h.strip():
+                c[h.strip().lower()] += 1
+    return {k: v for k, v in c.most_common()}
+
+
+def huecos_informe(path=PIPELINE, hoy=None, dias=30, umbral=3):
+    hoy = hoy or datetime.now().strftime("%Y-%m-%d")
+    filas = []
+    if Path(path).exists():
+        for line in Path(path).read_text().splitlines():
+            try:
+                filas.append(json.loads(line))
+            except Exception:
+                pass
+    c = contar_huecos(filas, hoy, dias, umbral)
+    print(f"# huecos (herramientas pedidas que no están en el perfil, últimos {dias} días)")
+    if not c:
+        print("  (sin huecos registrados)")
+    for k, v in c.items():
+        print(f"  {k}: {v}" + ("  → candidato a repo" if v >= umbral else ""))
+    return c
+
+
 def _rows_api(base, key):
     h = {"X-N8N-API-KEY": key}
     tabs = json.load(urllib.request.urlopen(urllib.request.Request(f"{base}/api/v1/data-tables?limit=250", headers=h), timeout=20))
@@ -79,6 +114,9 @@ def _rows_ssh(host):
 
 
 def main():
+    if "--huecos" in sys.argv:
+        huecos_informe()
+        return
     env = enviadas_por_semana()
     print(f"# enviadas (desde {PIPELINE.name})")
     if not env:

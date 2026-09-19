@@ -74,11 +74,28 @@ def price_hint(text):
 TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "sonnet").strip()   # modelo de `claude -p` (D12)
 TRIAGE_FILE = HERE / ".triage.jsonl"                                 # veredictos, gitignored
 PIPELINE_FILE = Path(os.environ.get("PIPELINE_FILE") or (HERE / ".pipeline.jsonl"))   # entregas (005, D21a), gitignored
-GIGS_TEST = os.environ.get("GIGS_TEST", "").strip().lower() in ("1", "true", "yes")
 N8N_WEBHOOK = os.environ.get("N8N_WEBHOOK_URL", "").strip()  # capa de entrega/aprobación
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()  # entrega directa (fallback de n8n)
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 TG_CHAT_TEST = os.environ.get("TELEGRAM_CHAT_ID_TEST", "").strip()
+N8N_TOKEN = os.environ.get("N8N_WEBHOOK_TOKEN", "").strip()   # D5: header X-Gigs-Token si no está vacío (nunca se imprime)
+
+
+def destino(env):
+    """D4 (008): canal de salida. Devuelve (modo, chat_id) con modo ∈ prod|test|dry. Pura.
+    DRY_RUN=1 gana → dry. CANAL=test sin TELEGRAM_CHAT_ID_TEST → dry (se avisa por stderr)."""
+    if (env.get("DRY_RUN") or "").strip().lower() in ("1", "true", "yes"):
+        return "dry", ""
+    canal = (env.get("CANAL") or "prod").strip().lower()
+    if canal == "dry":
+        return "dry", ""
+    if canal == "test":
+        chat = (env.get("TELEGRAM_CHAT_ID_TEST") or "").strip()
+        if not chat:
+            print("[canal test sin destino → dry]", file=sys.stderr)
+            return "dry", ""
+        return "test", chat
+    return "prod", (env.get("TELEGRAM_CHAT_ID") or "").strip()
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")  # LEY DEL CANAL REAL: sin red ni escritura
 
 
@@ -130,25 +147,35 @@ TRIAGE_SCHEMA = {"type": "object", "additionalProperties": False,
                  "properties": {"tipo": {"type": "string", "enum": ["empleo", "proyecto"]},
                                 "apto": {"type": "boolean"},
                                 "motivo": {"type": "string"},
-                                "texto": {"type": "string"}},
-                 "required": ["tipo", "apto", "motivo", "texto"]}
+                                "texto": {"type": "string"},
+                                "huecos": {"type": "array", "items": {"type": "string"}, "maxItems": 5}},
+                 "required": ["tipo", "apto", "motivo", "texto", "huecos"]}
 
 REGLAS_TRIAGE = (
-    "Sos el asistente de un freelancer de automatización. Te paso SU PERFIL y UN GIG. "
-    "Devolvé SOLO un JSON con: tipo ('empleo' si es un puesto/vacante, 'proyecto' si es un encargo "
-    "puntual), apto (true/false), motivo (1 línea) y texto.\n"
-    "apto=false si: exige inglés fluido/avanzado/C1/B2 o postular en inglés; seniority Senior, Lead, "
-    "Manager o QA; stack ajeno al perfil (Salesforce, Dynamics, Outsystems, SAP, ML/data science, "
-    "iOS/Android nativo, .NET/Java/C++ puro); presencial/híbrido; o nada que ver con automatización, "
-    "integraciones, bots, scraping o agentes con LLM. En ese caso texto=''.\n"
-    "apto=true → texto en español neutro, tuteo, sin encabezados ni notas:\n"
-    "  - empleo: carta de EXACTAMENTE 6 líneas: saludo+quién soy y ciudad; por qué encaja (la skill "
-    "exacta que piden y dónde la usé según el perfil); UN caso concreto del perfil con resultado; "
-    "stack y forma de trabajar; GitHub github.com/ISAACRICARDO2043; cierre ('Quedo atento a una "
-    "conversación. Español nativo; inglés básico.'). SIN precio.\n"
-    "  - proyecto: propuesta de 6 a 9 líneas al cliente (no sabés su nombre), foco en el resultado, "
-    "cierra con una pregunta concreta, y menciona UNA vez el RANGO ORIENTATIVO tal cual, aclarando "
-    "que el precio se cierra al conocer el alcance. PROHIBIDO un número único o distinto al rango.\n"
+    "Eres el asistente de un desarrollador freelance de automatización e IA aplicada (junior a semi-senior, "
+    "habla español, vive en Santiago de Chile). Te paso SU PERFIL, EJEMPLOS ETIQUETADOS por él y UN GIG. "
+    "Devuelve SOLO un JSON con: tipo ('empleo' si es un puesto/vacante, 'proyecto' si es un encargo "
+    "puntual), apto (true/false), motivo (1 línea), texto y huecos (lista, máx 5, minúsculas: herramientas/tecnologías "
+    "que el aviso pide y NO están en el perfil; [] si no hay).\n"
+    "REGLA DE INGLÉS (bloqueo duro): apto=false si el aviso está en inglés, exige inglés (fluido/avanzado/C1/B2) o "
+    "postular en inglés, SALVO que la descripción declare español/LATAM hispano.\n"
+    "REGLA JUNIOR: si el aviso es junior/trainee/práctica/'sin experiencia'/semi-junior, un stack que él no tiene NO "
+    "descalifica: apto=true y ese stack va en huecos (la carta no afirma experiencia en un hueco: dice qué hizo y que "
+    "aprende rápido con evidencia en sus repos). En avisos no-junior, un stack central ajeno sí descalifica, y también va en huecos.\n"
+    "apto=false también si: seniority Senior/Lead/Principal/Manager/Head; rol fuera de perfil (QA, iOS/Android, "
+    "data science/ML, marketing, ventas, soporte, DBA, diseño, DevOps/SRE); presencial o híbrido FUERA de Santiago de "
+    "Chile (en Santiago sí sirve); o nada que ver con automatización, integraciones, bots, scraping, agentes con LLM o "
+    "desarrollo web fullstack. En ese caso texto=''.\n"
+    "Usa los EJEMPLOS ETIQUETADOS como criterio: lo que él marcó apta/no_apta pesa más que tu intuición.\n"
+    "apto=true → texto en español neutro (NUNCA voseo: ni 'vos' ni conjugaciones rioplatenses terminadas en -ás/-és/-ís; "
+    "usa 'usted' o formas neutras), sin encabezados ni notas, firmado con el nombre EXACTO del perfil ('cómo me presento'):\n"
+    "  - empleo: carta de EXACTAMENTE 6 líneas: saludo + quién soy y ciudad; por qué encaja (la skill exacta que piden "
+    "y dónde la usé según el perfil); UN caso concreto del perfil con resultado; stack y forma de trabajar; GitHub "
+    "github.com/ISAACRICARDO2043; cierre 'Quedo atento a una conversación. Español nativo.'. SIN precio. "
+    "No menciones nivel de inglés.\n"
+    "  - proyecto: propuesta de 6 a 9 líneas al cliente (no sabes su nombre), foco en el resultado, cierra con una "
+    "pregunta concreta, y menciona UNA vez el RANGO ORIENTATIVO tal cual, aclarando que el precio se cierra al conocer "
+    "el alcance. PROHIBIDO un número único o distinto al rango.\n"
     "PROHIBIDO inventar experiencia, clientes o proyectos que no estén en el perfil.")
 
 
@@ -182,11 +209,43 @@ def parse_claude_output(raw):
         return None
     if obj["tipo"] not in ("empleo", "proyecto") or not isinstance(obj["apto"], bool):
         return None
+    h = obj.get("huecos")
+    huecos = [str(x).strip().lower() for x in h if str(x).strip()][:5] if isinstance(h, list) else []   # D2: inválido → []
     return {"tipo": obj["tipo"], "apto": obj["apto"], "motivo": str(obj["motivo"]),
-            "texto": str(obj["texto"])}
+            "texto": str(obj["texto"]), "huecos": huecos}
 
 
-def via_claude(perfil, titulo, texto, fuente=""):
+CASOS_FILE = HERE / "tests" / "fixtures" / "triage" / "casos.jsonl"   # ejemplos etiquetados por el usuario (007, T6)
+
+
+def ejemplos_etiquetados(excluir_id=None, origen="isaac", max_desc=220):
+    """Few-shot desde casos.jsonl (solo origen=isaac). excluir_id: leave-one-out para la evaluación. Puro salvo lectura."""
+    out = []
+    try:
+        for line in CASOS_FILE.read_text().splitlines():
+            if not line.strip():
+                continue
+            c = json.loads(line)
+            if c.get("origen") != origen or c.get("id") == excluir_id or c.get("excluido_eval"):
+                continue
+            d = re.sub(r"\s+", " ", c.get("desc") or "")[:max_desc]
+            out.append(f"- [{c['etiqueta'].upper()}] {c['titulo']} ({c.get('fuente','')}, {c.get('ubicacion','') or 'remoto'})"
+                       + (f": {d}…" if d else ""))
+    except Exception:
+        return ""
+    return "\n".join(out)
+
+
+def armar_prompt(perfil, titulo, texto, fuente="", excluir_id=None):
+    rango = price_hint(titulo + " " + texto)
+    ejemplos = ejemplos_etiquetados(excluir_id=excluir_id)
+    return (f"=== PERFIL ===\n{perfil}\n\n=== EJEMPLOS ETIQUETADOS POR EL USUARIO (APTA = postuló / NO_APTA = descartó) ===\n"
+            f"{ejemplos or '(sin ejemplos)'}\n\n=== GIG ===\nFuente: {fuente}\nTítulo: {titulo}\n\n"
+            f"{texto[:4000]}\n\n=== RANGO ORIENTATIVO (solo si tipo=proyecto) ===\n{rango}\n\n"
+            f"=== REGLAS ===\n{REGLAS_TRIAGE}\n\nResponde solo el JSON.")
+
+
+def via_claude(perfil, titulo, texto, fuente="", excluir_id=None):
     """Triage + redacción con `claude -p` (sin herramientas, 1 turno, timeout 120 s).
     None si DRY_RUN, claude ausente, timeout, error o salida no-JSON (→ fallback D13)."""
     if DRY_RUN:
@@ -194,10 +253,7 @@ def via_claude(perfil, titulo, texto, fuente=""):
         return None
     if not claude_disponible():
         return None
-    rango = price_hint(titulo + " " + texto)
-    prompt = (f"=== PERFIL ===\n{perfil}\n\n=== GIG ===\nFuente: {fuente}\nTítulo: {titulo}\n\n"
-              f"{texto[:4000]}\n\n=== RANGO ORIENTATIVO (solo si tipo=proyecto) ===\n{rango}\n\n"
-              f"=== REGLAS ===\n{REGLAS_TRIAGE}\n\nRespondé solo el JSON.")
+    prompt = armar_prompt(perfil, titulo, texto, fuente, excluir_id)
     try:
         r = subprocess.run(["claude", "-p", prompt, "--model", TRIAGE_MODEL,
                             "--output-format", "json", "--json-schema", json.dumps(TRIAGE_SCHEMA),
@@ -222,18 +278,24 @@ def registrar_triage(titulo, fuente, veredicto, motor):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def pipeline_record(g, tipo, via):
-    """Fila del registro de entregas (D21a): qué propuesta salió, por dónde. Pura."""
+def pipeline_record(g, tipo, via, estado="entregado", motivo="", huecos=None):
+    """Fila del registro (D21a + 007): TODO gig nuevo deja línea con estado y motivo. Pura.
+    estado: entregado | entregado_plantilla | triage_no_apto | prefiltro | fallo_entrega."""
     return {"ts": datetime.now().isoformat(timespec="seconds"), "id": g.get("id", ""),
             "sig": f"{(g.get('company') or '').strip().lower()}|{(g.get('title') or '').strip().lower()}",
             "titulo": (g.get("title") or "")[:120], "url": g.get("url", ""), "fuente": g.get("source", ""),
-            "tipo": tipo, "via": via}
+            "tipo": tipo, "via": via, "estado": estado, "motivo": (motivo or "")[:200], "huecos": list(huecos or [])[:5]}
 
 
 def log_pipeline(rec, path=None):
     """Append de una fila al .pipeline.jsonl. DRY_RUN=1 no escribe."""
     if DRY_RUN:
-        print(f"[dry-run] pipeline {rec.get('titulo', '')[:80]}", file=sys.stderr)
+        print(f"[dry-run] pipeline {rec.get('estado', '')} {rec.get('motivo', '')[:30]} {rec.get('titulo', '')[:60]}", file=sys.stderr)
+        dry = os.environ.get("PIPELINE_DRY_FILE", "").strip()   # 007: solo para gates; nunca el registro real
+        if not dry:
+            return False
+        with Path(dry).open("a") as f:
+            f.write(json.dumps({**rec, "dry_run": True}, ensure_ascii=False) + "\n")
         return False
     p = Path(path) if path else PIPELINE_FILE
     with p.open("a") as f:
@@ -254,23 +316,32 @@ SKILLS = {"n8n": "n8n", "zapier": "Zapier", "make": "Make", "scrap": "web scrapi
           "automat": "automatización de procesos", "rpa": "RPA", "webhook": "webhooks"}
 
 
-def via_plantilla(perfil, titulo, texto):
+def via_plantilla(perfil, titulo, texto, tipo="proyecto"):
+    """Fallback sin LLM (D13). Español neutro, sin voseo. tipo='empleo' → carta sin precio;
+    tipo='proyecto' → propuesta con el rango orientativo (LEY DEL PRECIO)."""
     t = (titulo + " " + texto).lower()
     matched = sorted({v for k, v in SKILLS.items() if k in t})
     skills_txt = ", ".join(matched) if matched else "automatización de procesos"
     nombre = re.search(r"cómo me presento:\s*(.+)", perfil or "")
     nombre = (nombre.group(1).strip().strip("<>") if nombre else "")
-    rango = price_hint(titulo + " " + texto)
-    saludo = f"¡Hola! Soy {nombre}, me dedico a {skills_txt}." if nombre else f"¡Hola! Me dedico a {skills_txt}."
+    saludo = f"Hola, soy {nombre}, me dedico a {skills_txt}." if nombre else f"Hola, me dedico a {skills_txt}."
     firma = f"\n\n— {nombre}" if nombre else ""
+    if tipo == "empleo":
+        return (f"{saludo}\n\n"
+                f"Vi la oferta \"{titulo[:70]}\" y encaja con lo que hago: construyo sistemas completos y los dejo "
+                f"funcionando en producción, con pruebas y documentación.\n\n"
+                f"Trabajo con n8n, Python, Docker y agentes con LLM; mi código público está en "
+                f"github.com/ISAACRICARDO2043 para que vean trabajo real.\n\n"
+                f"Quedo atento a una conversación. Español nativo.{firma}")
+    rango = price_hint(titulo + " " + texto)
     return (f"{saludo}\n\n"
-            f"Leí lo que necesitás (\"{titulo[:70]}\") y es justo lo que hago: te puedo armar "
-            f"una solución que te saque ese trabajo manual de encima y te ahorre horas cada semana.\n\n"
-            f"Trabajo rápido y te muestro avances concretos, no promesas. Puedo arrancar con una "
-            f"versión funcionando chica para que veas resultado antes de seguir.\n\n"
+            f"Leí lo que necesita (\"{titulo[:70]}\") y es justo lo que hago: puedo armar una solución que le "
+            f"quite ese trabajo manual de encima y le ahorre horas cada semana.\n\n"
+            f"Trabajo rápido y muestro avances concretos, no promesas. Puedo empezar con una versión chica "
+            f"funcionando para que vea resultados antes de seguir.\n\n"
             f"Como referencia, proyectos así suelen ir en {rango}.\n\n"
-            f"¿Me contás un poco más del proceso actual y con qué herramientas trabajás hoy? "
-            f"Así te paso un plan concreto y el precio cerrado.{firma}")
+            f"¿Me cuenta un poco más del proceso actual y con qué herramientas trabaja hoy? "
+            f"Así le paso un plan concreto y el precio cerrado.{firma}")
 
 
 def log_interes(titulo, texto, arg):
@@ -291,6 +362,18 @@ def log_interes(titulo, texto, arg):
     return kws
 
 
+def armar_request_n8n(titulo, url, propuesta, empresa="", fuente="", chat="", token=None):
+    """Request al webhook (sin enviarlo). Header X-Gigs-Token solo si hay N8N_WEBHOOK_TOKEN (D5). Puro."""
+    body = json.dumps({"titulo": titulo, "url": url, "propuesta": propuesta,
+                       "empresa": empresa, "fuente": fuente, "chat_id": chat,
+                       "ts": datetime.now().isoformat(timespec="seconds")}).encode()
+    headers = {"Content-Type": "application/json"}
+    tok = N8N_TOKEN if token is None else token
+    if tok:
+        headers["X-Gigs-Token"] = tok
+    return urllib.request.Request(N8N_WEBHOOK or "http://127.0.0.1:5678/webhook/propuesta", data=body, headers=headers)
+
+
 def send_to_n8n(titulo, url, propuesta, empresa="", fuente=""):
     """Manda la propuesta a la capa n8n (Telegram + aprobación + registro en Sheets).
     Devuelve False si no hay webhook o si n8n no respondió 2xx (ej. workflow inactivo)."""
@@ -299,12 +382,11 @@ def send_to_n8n(titulo, url, propuesta, empresa="", fuente=""):
     if DRY_RUN:
         print(f"[dry-run] n8n {titulo[:80]}", file=sys.stderr)
         return False
-    chat = TG_CHAT_TEST if (GIGS_TEST and TG_CHAT_TEST) else TG_CHAT   # D22: el chat viaja en el body, nunca en el workflow
-    body = json.dumps({"titulo": titulo, "url": url, "propuesta": propuesta,
-                       "empresa": empresa, "fuente": fuente, "chat_id": chat,
-                       "ts": datetime.now().isoformat(timespec="seconds")}).encode()
-    req = urllib.request.Request(N8N_WEBHOOK, data=body,
-                                 headers={"Content-Type": "application/json"})
+    modo, chat = destino(os.environ)                                     # D4: prod|test|dry (D22: el chat viaja en el body)
+    if modo == "dry":
+        print(f"[dry-run] n8n {titulo[:80]}", file=sys.stderr)
+        return False
+    req = armar_request_n8n(titulo, url, propuesta, empresa, fuente, chat)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return 200 <= r.status < 300
@@ -317,11 +399,12 @@ def send_to_telegram(titulo, url, propuesta):
     """Entrega directa a tu Telegram (sin n8n). Usa el bot del .env."""
     if not (TG_TOKEN and TG_CHAT):
         return False
-    if DRY_RUN:
+    modo, chat = destino(os.environ)
+    if modo == "dry":
         print(f"[dry-run] telegram {titulo[:80]}", file=sys.stderr)
         return False
     text = f"💼 *Propuesta lista*\n*{titulo}*\n{url}\n\n{propuesta}"
-    data = urllib.parse.urlencode({"chat_id": TG_CHAT, "text": text,
+    data = urllib.parse.urlencode({"chat_id": chat, "text": text,
                                    "parse_mode": "Markdown"}).encode()
     try:
         with urllib.request.urlopen(urllib.request.Request(
@@ -364,7 +447,7 @@ def main():
         propuesta = v["texto"]
     else:
         motor = "plantilla" + ("" if claude_disponible() else " — claude -p no disponible en esta máquina")
-        propuesta = via_plantilla(perfil, titulo, texto)
+        propuesta = via_plantilla(perfil, titulo, texto, tipo=(v or {}).get("tipo") or "proyecto")
         print(f"\n# Propuesta para: {titulo}\n# (motor: {motor})\n")
     print(propuesta)
     print(f"\n# 👍 interés registrado ({', '.join(kws) or 'sin keywords'}) → el buscador "

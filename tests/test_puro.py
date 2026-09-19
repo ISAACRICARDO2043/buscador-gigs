@@ -1,6 +1,7 @@
 """Tests puros (sin red, sin escritura). Pinean los bugs medidos en F0 (H4a/H4b/H5')
 y la LEY DEL CANAL REAL (DRY_RUN). Correr: python3 -m unittest -q tests.test_puro"""
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -71,7 +72,7 @@ class TriageClaude(unittest.TestCase):  # 003 — T1: parse + DRY_RUN no invoca 
 
     def test_parse_fences(self):
         v = proponer.parse_claude_output('```json\n{"tipo":"empleo","apto":false,"motivo":"x","texto":""}\n```')
-        self.assertEqual(v, {"tipo": "empleo", "apto": False, "motivo": "x", "texto": ""})
+        self.assertEqual(v, {"tipo": "empleo", "apto": False, "motivo": "x", "texto": "", "huecos": []})
 
     def test_parse_envelope(self):
         v = proponer.parse_claude_output(self.ENV)
@@ -128,7 +129,7 @@ class TriageBuscar(unittest.TestCase):  # 003 — T2: apto=False → deliver NO 
 
     def test_none_cae_a_plantilla(self):
         res, llamadas = self._run(None)
-        self.assertEqual(res, "plantilla"); self.assertIn("Me dedico a", llamadas[0][2])  # T3: sin nombre no hay "Soy"
+        self.assertEqual(res, "plantilla"); self.assertIn("me dedico a", llamadas[0][2])  # T3/T8: sin nombre no hay "soy"
 
 
 class DetectorIngles(unittest.TestCase):  # 005 — T2 (medido: 7/123 sin marcar, frases C1/B2)
@@ -148,14 +149,33 @@ class DetectorIngles(unittest.TestCase):  # 005 — T2 (medido: 7/123 sin marcar
         self.assertTrue(buscar.elegible_auto({"en": False, "esp": False}))
 
 
-class PlantillaSinNombre(unittest.TestCase):  # 005 — T3
+VOSEO = re.compile(r"\b(necesit[aá]s|pod[eé]s|cont[aá]s|ten[eé]s|quer[eé]s|vos)\b")
+
+
+class PlantillaSinNombre(unittest.TestCase):  # 005 — T3 · 007 — T8
     def test_sin_perfil(self):
         p = proponer.via_plantilla("", "Bot n8n", "necesito n8n")
-        self.assertNotIn("freelancer", p); self.assertNotIn("Soy", p); self.assertIn("¡Hola! Me dedico a", p)
+        self.assertNotIn("freelancer", p); self.assertNotIn("soy", p.lower().split("\n")[0].replace("hola, me", "")); self.assertIn("Hola, me dedico a", p)
 
     def test_con_nombre(self):
         p = proponer.via_plantilla("cómo me presento: Ana", "Bot n8n", "necesito n8n")
-        self.assertIn("Soy Ana", p); self.assertTrue(p.endswith("— Ana"))
+        self.assertIn("Hola, soy Ana", p); self.assertTrue(p.endswith("— Ana"))
+
+
+class CartasIsacc(unittest.TestCase):  # 007 — T8: grafía Isacc, empleo sin precio, sin voseo, sin nivel de inglés
+    PERFIL = "cómo me presento: Isacc\nubicación: Santiago, Chile"
+
+    def test_empleo_sin_precio_con_isacc(self):
+        p = proponer.via_plantilla(self.PERFIL, "Desarrollador de Automatizaciones", "n8n y python", tipo="empleo")
+        self.assertIn("Isacc", p); self.assertNotIn("USD", p); self.assertNotIn("inglés", p.lower().replace("español nativo", ""))
+        self.assertIsNone(VOSEO.search(p), p)
+
+    def test_proyecto_con_rango_sin_voseo(self):
+        p = proponer.via_plantilla(self.PERFIL, "Bot de WhatsApp para cotizaciones", "automatización whatsapp", tipo="proyecto")
+        self.assertIn("Isacc", p); self.assertIn("USD", p); self.assertIsNone(VOSEO.search(p), p)
+
+    def test_prompt_sin_nivel_de_ingles_ni_voseo(self):
+        self.assertNotIn("inglés básico", proponer.REGLAS_TRIAGE); self.assertIn("Español nativo.", proponer.REGLAS_TRIAGE)
 
 
 class Pipeline(unittest.TestCase):  # 005 — T4 (DRY_RUN=1 en este proceso → log_pipeline NO escribe)
@@ -199,6 +219,79 @@ class Metricas(unittest.TestCase):  # 005 — T4 metricas.py (funciones puras + 
         rows = [{"decision": "aprobada", "ts": "2026-09-18T04:00:00"}, {"decision": "descartada", "ts": "2026-09-18T05:00:00"},
                 {"decision": "vencida", "createdAt": "2026-09-19T05:00:00Z"}]
         self.assertEqual(metricas.decisiones_por_semana(rows)["2026-W38"], {"aprobada": 1, "descartada": 1, "vencida": 1})
+
+
+class Resumen(unittest.TestCase):  # 007 — T5 (funciones puras)
+    FILAS = [{"ts": "2026-09-18T09:01:00", "estado": "entregado", "titulo": "Dev n8n", "fuente": "GetOnBrd", "motivo": "ok"},
+             {"ts": "2026-09-18T09:02:00", "estado": "prefiltro", "titulo": "Senior X", "fuente": "WWR", "motivo": "seniority"},
+             {"ts": "2026-09-18T09:03:00", "estado": "prefiltro", "titulo": "Y", "fuente": "WWR", "motivo": "ingles"},
+             {"ts": "2026-09-18T12:00:00", "estado": "triage_no_apto", "titulo": "Z", "fuente": "Jobicy", "motivo": "stack ajeno"},
+             {"ts": "2026-09-17T21:00:00", "estado": "entregado", "titulo": "ayer", "fuente": "GetOnBrd", "motivo": ""}]
+
+    def test_filas_del_dia(self):
+        import tempfile, json, resumen
+        f = Path(tempfile.mkdtemp()) / "p.jsonl"; f.write_text("".join(json.dumps(r) + "\n" for r in self.FILAS))
+        self.assertEqual(len(resumen.filas_del_dia(f, "2026-09-18")), 4)
+        self.assertEqual(resumen.filas_del_dia(f.parent / "no.jsonl", "2026-09-18"), [])
+
+    def test_resumir(self):
+        import resumen
+        txt = resumen.resumir(self.FILAS[:4], {"aprobada": 1})
+        self.assertIn("nuevos: 4 · aptos enviados: 1 · descartados por triage: 1", txt)
+        self.assertIn("senior/lead/manager 1", txt); self.assertIn("en inglés 1", txt); self.assertIn("✅ Dev n8n", txt); self.assertIn("aprobadas 1", txt)
+
+
+class Huecos(unittest.TestCase):  # 008 — T3 (D2/D3)
+    def test_parse_huecos(self):
+        v = proponer.parse_claude_output('{"tipo":"empleo","apto":true,"motivo":"junior","texto":"t","huecos":["Rails"," React ",""]}')
+        self.assertEqual(v["huecos"], ["rails", "react"])
+        v = proponer.parse_claude_output('{"tipo":"empleo","apto":true,"motivo":"m","texto":"t"}')
+        self.assertEqual(v["huecos"], [])                                    # sin campo → []
+        v = proponer.parse_claude_output('{"tipo":"empleo","apto":true,"motivo":"m","texto":"t","huecos":"rails"}')
+        self.assertEqual(v["huecos"], [])                                    # inválido → [], no rompe
+
+    def test_contar_huecos_umbral(self):
+        import metricas
+        filas = [{"ts": "2026-09-18T10:00:00", "estado": "entregado", "huecos": ["rails", "react"]},
+                 {"ts": "2026-09-17T10:00:00", "estado": "triage_no_apto", "huecos": ["rails"]},
+                 {"ts": "2026-09-16T10:00:00", "estado": "entregado_plantilla", "huecos": ["Rails"]},
+                 {"ts": "2026-09-15T10:00:00", "estado": "prefiltro", "huecos": ["java"]},          # prefiltro no cuenta
+                 {"ts": "2026-07-01T10:00:00", "estado": "entregado", "huecos": ["rails"]},         # viejo no cuenta
+                 {"ts": "2026-09-18T11:00:00", "estado": "entregado"}]                             # sin campo
+        c = metricas.contar_huecos(filas, "2026-09-18", dias=30, umbral=3)
+        self.assertEqual(c, {"rails": 3, "react": 1})
+        self.assertTrue(c["rails"] >= 3 and c["react"] < 3)
+
+    def test_pipeline_record_huecos(self):
+        r = proponer.pipeline_record({"id": "x", "title": "t"}, "empleo", "n8n", huecos=["a", "b", "c", "d", "e", "f"])
+        self.assertEqual(r["huecos"], ["a", "b", "c", "d", "e"])
+
+
+class Destino(unittest.TestCase):  # 008 — T4 (D4)
+    def test_prod(self):
+        self.assertEqual(proponer.destino({"CANAL": "prod", "TELEGRAM_CHAT_ID": "111"}), ("prod", "111"))
+        self.assertEqual(proponer.destino({"TELEGRAM_CHAT_ID": "111"}), ("prod", "111"))          # default prod
+
+    def test_test_con_id(self):
+        self.assertEqual(proponer.destino({"CANAL": "test", "TELEGRAM_CHAT_ID": "111", "TELEGRAM_CHAT_ID_TEST": "222"}), ("test", "222"))
+
+    def test_test_sin_id_es_dry(self):
+        self.assertEqual(proponer.destino({"CANAL": "test", "TELEGRAM_CHAT_ID": "111", "TELEGRAM_CHAT_ID_TEST": ""}), ("dry", ""))
+
+    def test_dry_run_gana(self):
+        self.assertEqual(proponer.destino({"CANAL": "prod", "DRY_RUN": "1", "TELEGRAM_CHAT_ID": "111"}), ("dry", ""))
+        self.assertEqual(proponer.destino({"CANAL": "dry", "TELEGRAM_CHAT_ID": "111"}), ("dry", ""))
+
+
+class HeaderWebhook(unittest.TestCase):  # 008 — T5a (D5): request capturado, sin red
+    def test_con_token(self):
+        req = proponer.armar_request_n8n("t", "u", "p", chat="1", token="abc")
+        self.assertEqual(req.get_header("X-gigs-token"), "abc")
+        self.assertIn(b'"chat_id": "1"', req.data)
+
+    def test_sin_token(self):
+        req = proponer.armar_request_n8n("t", "u", "p", chat="1", token="")
+        self.assertFalse(req.has_header("X-gigs-token"))
 
 
 if __name__ == "__main__":

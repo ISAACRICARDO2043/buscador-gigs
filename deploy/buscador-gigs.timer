@@ -1,0 +1,10 @@
+[Unit]
+Description=buscador-gigs cada 3 h entre 09 y 21 (mismo horario que el cron del PC)
+
+[Timer]
+OnCalendar=*-*-* 09..21/3:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
