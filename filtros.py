@@ -17,7 +17,11 @@ STRONG = ["n8n", "zapier", "make.com", "integromat", "automation", "automate",
           "integración api", "integracion api", "bot de whatsapp",
           # 007: perfil = automatización / IA aplicada / web fullstack junior-semisenior
           "llm", "openai", "claude", "agente de ia", "agentes de ia", "ai agent", "inteligencia artificial",
-          "python", "django", "fastapi", "next.js", "nextjs", "react", "node", "postgresql", "api rest", "rest api"]
+          "python", "django", "fastapi", "next.js", "nextjs", "react", "node", "postgresql", "api rest", "rest api",
+          # 010 (A3): roles puente — contratista remoto en español
+          "soporte técnico", "soporte tecnico", "technical support", "implementación", "implementacion", "onboarding",
+          "qa manual", "tester", "analista de datos", "data analyst", "help desk", "mesa de ayuda", "customer success",
+          "operaciones", "operations", "implementation specialist", "support engineer"]
 STRONG += [k.strip().lower() for k in os.environ.get("GIG_KEYWORDS_EXTRA", "").split(",") if k.strip()]
 WEAK = ["workflow", "bot", "integration", "pipeline", "automated",
         "flujo de trabajo", "integración", "integracion", "backend", "full-stack", "fullstack", "full stack"]
@@ -34,12 +38,14 @@ SENIORITY = r"\b(senior|sr\.?|lead|principal|staff|head|director|manager|gerente
 SEMI = r"\b(semi[ -]?senior|ssr)\b"
 
 # ---- regla 3: rol fuera de perfil (solo título) ----
+# 010 (A3): QA manual/tester, soporte/help desk, customer success, onboarding/implementación y analista de datos
+# son ROLES PUENTE y ya no se bloquean (seniority sí sigue bloqueando).
+PUENTE = ["soporte", "support", "help desk", "mesa de ayuda", "customer success", "onboarding", "implementaci",
+          "implementation", "qa", "tester", "testing", "analista de datos", "data analyst", "operaciones", "operations"]
 ROL_FUERA = ["ios", "android", "mobile", "móvil", "movil", "react native", "flutter",
-             "qa", "tester", "testing", "quality assurance",
              "data scientist", "ml engineer", "machine learning", "forecasting", "data engineer",
              "marketing", "growth", "content", "contenido", "community", "branding", "copywriter", "seo",
              "ventas", "sales", "desarrollador de negocio", "sdr", "account executive", "comercial",
-             "soporte", "support", "customer success", "onboarding", "help desk",
              "dba", "administrator", "administrador",
              "design", "diseñ", "designer", "ux", "ui/ux",
              "forward deployed", "product manager", "product owner",
@@ -103,9 +109,25 @@ def presencial_fuera_santiago(g):
     return not any(k in ciudad for k in SANTIAGO)
 
 
+def es_puente(title):
+    t = (title or "").lower()
+    return any(k in t for k in PUENTE)
+
+
+def contrato_cl(g):
+    """010 (A1/A2): dato duro de la fuente. País del aviso = Chile y modalidad híbrida/presencial/'remoto local'
+    (residencia en Chile) → contrato local chileno. fully_remote desde Chile NO bloquea acá (lo decide el triage)."""
+    paises = [str(x).lower() for x in (g.get("countries") or [])]
+    if "chile" not in paises:
+        return False
+    return (g.get("modality") or "") in ("hybrid", "no_remote", "remote_local")
+
+
 def prefiltro(g):
     if es_ingles(g) and not declara_espanol(g.get("desc")):
         return False, "ingles"
+    if contrato_cl(g):
+        return False, "contrato_cl"
     if titulo_seniority(g.get("title")):
         return False, "seniority"
     if titulo_rol_fuera(g.get("title")):

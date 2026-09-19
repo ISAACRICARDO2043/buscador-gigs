@@ -148,15 +148,24 @@ TRIAGE_SCHEMA = {"type": "object", "additionalProperties": False,
                                 "apto": {"type": "boolean"},
                                 "motivo": {"type": "string"},
                                 "texto": {"type": "string"},
-                                "huecos": {"type": "array", "items": {"type": "string"}, "maxItems": 5}},
-                 "required": ["tipo", "apto", "motivo", "texto", "huecos"]}
+                                "huecos": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+                                "pais_empleador": {"type": "string"},
+                                "contratista_ok": {"type": "boolean"}},
+                 "required": ["tipo", "apto", "motivo", "texto", "huecos", "pais_empleador", "contratista_ok"]}
 
 REGLAS_TRIAGE = (
     "Eres el asistente de un desarrollador freelance de automatización e IA aplicada (junior a semi-senior, "
     "habla español, vive en Santiago de Chile). Te paso SU PERFIL, EJEMPLOS ETIQUETADOS por él y UN GIG. "
     "Devuelve SOLO un JSON con: tipo ('empleo' si es un puesto/vacante, 'proyecto' si es un encargo "
-    "puntual), apto (true/false), motivo (1 línea), texto y huecos (lista, máx 5, minúsculas: herramientas/tecnologías "
-    "que el aviso pide y NO están en el perfil; [] si no hay).\n"
+    "puntual), apto (true/false), motivo (1 línea), texto, huecos (lista, máx 5, minúsculas: herramientas/tecnologías "
+    "que el aviso pide y NO están en el perfil; [] si no hay), pais_empleador (país del empleador o 'desconocido') y "
+    "contratista_ok (true si el aviso admite contractor/freelance/independiente, Deel, pago en USD o 'cualquier país').\n"
+    "REGLA CONTRATO_CL (bloqueo duro): empleador chileno que exige contrato local chileno, presencialidad o residencia en "
+    "Chile → apto=false, motivo que empiece con 'contrato_cl'. Empleador desconocido NO bloquea. Si PAÍS (dato de la fuente) "
+    "viene informado, gana sobre tu inferencia.\n"
+    "ROLES PUENTE (aptos si no piden inglés ni seniority): soporte técnico, implementación/onboarding de SaaS, QA manual, "
+    "analista de datos/automatización jr, operaciones con IA.\n"
+    "MODALIDAD: si pais_empleador ≠ Chile, la carta incluye la línea 'Modalidad:' del perfil tal cual; si es Chile, no.\n"
     "REGLA DE INGLÉS (bloqueo duro): apto=false si el aviso está en inglés, exige inglés (fluido/avanzado/C1/B2) o "
     "postular en inglés, SALVO que la descripción declare español/LATAM hispano.\n"
     "REGLA JUNIOR: si el aviso es junior/trainee/práctica/'sin experiencia'/semi-junior, un stack que él no tiene NO "
@@ -211,8 +220,11 @@ def parse_claude_output(raw):
         return None
     h = obj.get("huecos")
     huecos = [str(x).strip().lower() for x in h if str(x).strip()][:5] if isinstance(h, list) else []   # D2: inválido → []
+    pais = obj.get("pais_empleador")
+    pais = pais.strip() if isinstance(pais, str) and pais.strip() else "desconocido"                     # 010: inválido → desconocido
+    contr = obj.get("contratista_ok") is True                                                             # 010: inválido → False
     return {"tipo": obj["tipo"], "apto": obj["apto"], "motivo": str(obj["motivo"]),
-            "texto": str(obj["texto"]), "huecos": huecos}
+            "texto": str(obj["texto"]), "huecos": huecos, "pais_empleador": pais, "contratista_ok": contr}
 
 
 CASOS_FILE = HERE / "tests" / "fixtures" / "triage" / "casos.jsonl"   # ejemplos etiquetados por el usuario (007, T6)
@@ -236,16 +248,17 @@ def ejemplos_etiquetados(excluir_id=None, origen="isaac", max_desc=220):
     return "\n".join(out)
 
 
-def armar_prompt(perfil, titulo, texto, fuente="", excluir_id=None):
+def armar_prompt(perfil, titulo, texto, fuente="", excluir_id=None, pais=None):
     rango = price_hint(titulo + " " + texto)
     ejemplos = ejemplos_etiquetados(excluir_id=excluir_id)
+    pais_txt = f"PAÍS (dato de la fuente): {', '.join(pais)}\n" if pais else ""
     return (f"=== PERFIL ===\n{perfil}\n\n=== EJEMPLOS ETIQUETADOS POR EL USUARIO (APTA = postuló / NO_APTA = descartó) ===\n"
-            f"{ejemplos or '(sin ejemplos)'}\n\n=== GIG ===\nFuente: {fuente}\nTítulo: {titulo}\n\n"
+            f"{ejemplos or '(sin ejemplos)'}\n\n=== GIG ===\nFuente: {fuente}\n{pais_txt}Título: {titulo}\n\n"
             f"{texto[:4000]}\n\n=== RANGO ORIENTATIVO (solo si tipo=proyecto) ===\n{rango}\n\n"
             f"=== REGLAS ===\n{REGLAS_TRIAGE}\n\nResponde solo el JSON.")
 
 
-def via_claude(perfil, titulo, texto, fuente="", excluir_id=None):
+def via_claude(perfil, titulo, texto, fuente="", excluir_id=None, pais=None):
     """Triage + redacción con `claude -p` (sin herramientas, 1 turno, timeout 120 s).
     None si DRY_RUN, claude ausente, timeout, error o salida no-JSON (→ fallback D13)."""
     if DRY_RUN:
@@ -253,7 +266,7 @@ def via_claude(perfil, titulo, texto, fuente="", excluir_id=None):
         return None
     if not claude_disponible():
         return None
-    prompt = armar_prompt(perfil, titulo, texto, fuente, excluir_id)
+    prompt = armar_prompt(perfil, titulo, texto, fuente, excluir_id, pais)
     try:
         r = subprocess.run(["claude", "-p", prompt, "--model", TRIAGE_MODEL,
                             "--output-format", "json", "--json-schema", json.dumps(TRIAGE_SCHEMA),
@@ -278,13 +291,14 @@ def registrar_triage(titulo, fuente, veredicto, motor):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def pipeline_record(g, tipo, via, estado="entregado", motivo="", huecos=None):
+def pipeline_record(g, tipo, via, estado="entregado", motivo="", huecos=None, pais=None, contratista=None, puente=False):
     """Fila del registro (D21a + 007): TODO gig nuevo deja línea con estado y motivo. Pura.
     estado: entregado | entregado_plantilla | triage_no_apto | prefiltro | fallo_entrega."""
     return {"ts": datetime.now().isoformat(timespec="seconds"), "id": g.get("id", ""),
             "sig": f"{(g.get('company') or '').strip().lower()}|{(g.get('title') or '').strip().lower()}",
             "titulo": (g.get("title") or "")[:120], "url": g.get("url", ""), "fuente": g.get("source", ""),
-            "tipo": tipo, "via": via, "estado": estado, "motivo": (motivo or "")[:200], "huecos": list(huecos or [])[:5]}
+            "tipo": tipo, "via": via, "estado": estado, "motivo": (motivo or "")[:200], "huecos": list(huecos or [])[:5],
+            "pais_empleador": pais or "desconocido", "contratista_ok": bool(contratista), "puente": bool(puente)}
 
 
 def log_pipeline(rec, path=None):
@@ -303,10 +317,10 @@ def log_pipeline(rec, path=None):
     return True
 
 
-def redactar(perfil, titulo, texto, fuente=""):
-    """Veredicto de triage + texto. dict {tipo, apto, motivo, texto} con motor claude, o None
-    (DRY_RUN / claude no disponible / falló) para que el caller caiga a la plantilla (D13)."""
-    v = via_claude(perfil, titulo, texto, fuente)
+def redactar(perfil, titulo, texto, fuente="", pais=None):
+    """Veredicto de triage + texto. dict {tipo, apto, motivo, texto, huecos, pais_empleador, contratista_ok} con motor
+    claude, o None (DRY_RUN / claude no disponible / falló) para que el caller caiga a la plantilla (D13)."""
+    v = via_claude(perfil, titulo, texto, fuente, pais=pais)
     registrar_triage(titulo, fuente, v, "claude" if v else "plantilla")
     return v
 
@@ -316,7 +330,15 @@ SKILLS = {"n8n": "n8n", "zapier": "Zapier", "make": "Make", "scrap": "web scrapi
           "automat": "automatización de procesos", "rpa": "RPA", "webhook": "webhooks"}
 
 
-def via_plantilla(perfil, titulo, texto, tipo="proyecto"):
+def linea_modalidad(perfil, pais):
+    """010 (A4): la línea 'Modalidad: …' del perfil, solo si el empleador NO es chileno. Pura."""
+    if (pais or "").strip().lower() in ("chile", "cl"):
+        return ""
+    m = re.search(r"^modalidad:\s*(.+)$", perfil or "", re.I | re.M)
+    return f"\n\nModalidad: {m.group(1).strip()}" if m else ""
+
+
+def via_plantilla(perfil, titulo, texto, tipo="proyecto", pais="desconocido"):
     """Fallback sin LLM (D13). Español neutro, sin voseo. tipo='empleo' → carta sin precio;
     tipo='proyecto' → propuesta con el rango orientativo (LEY DEL PRECIO)."""
     t = (titulo + " " + texto).lower()
@@ -331,7 +353,7 @@ def via_plantilla(perfil, titulo, texto, tipo="proyecto"):
                 f"Vi la oferta \"{titulo[:70]}\" y encaja con lo que hago: construyo sistemas completos y los dejo "
                 f"funcionando en producción, con pruebas y documentación.\n\n"
                 f"Trabajo con n8n, Python, Docker y agentes con LLM; mi código público está en "
-                f"github.com/ISAACRICARDO2043 para que vean trabajo real.\n\n"
+                f"github.com/ISAACRICARDO2043 para que vean trabajo real.{linea_modalidad(perfil, pais)}\n\n"
                 f"Quedo atento a una conversación. Español nativo.{firma}")
     rango = price_hint(titulo + " " + texto)
     return (f"{saludo}\n\n"

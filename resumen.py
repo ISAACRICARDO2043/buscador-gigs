@@ -17,7 +17,7 @@ PIPELINE = Path(os.environ.get("PIPELINE_FILE") or (HERE / ".pipeline.jsonl"))
 TZ = ZoneInfo("America/Santiago")
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 MOTIVO_TXT = {"ingles": "en inglés", "seniority": "senior/lead/manager", "rol": "rol fuera de perfil",
-              "sin_hit": "sin keywords", "presencial": "presencial fuera de Santiago"}
+              "sin_hit": "sin keywords", "presencial": "presencial fuera de Santiago", "contrato_cl": "contrato local chileno"}
 
 
 def _load_env():
@@ -54,6 +54,9 @@ def resumir(filas, decisiones=None, pendientes=None):
               f"nuevos: {len(filas)} · aptos enviados: {len(aptos)} · descartados por triage: {estados.get('triage_no_apto', 0)}"]
     if motivos:
         lineas.append("prefiltro: " + ", ".join(f"{MOTIVO_TXT.get(m, m)} {n}" for m, n in motivos.most_common()))
+    cl = sum(1 for r in filas if r.get("motivo", "").startswith("contrato_cl"))                       # 010 (A6)
+    puente = sum(1 for r in filas if r.get("puente") and r.get("estado") in ("entregado", "entregado_plantilla"))
+    lineas.append(f"chilenas con contrato local: {cl} · puente: {puente}")
     for r in aptos[:5]:
         lineas.append(f"✅ {r.get('titulo', '')[:70]} ({r.get('fuente', '')})")
     if decisiones is not None:

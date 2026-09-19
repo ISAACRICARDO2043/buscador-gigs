@@ -72,7 +72,7 @@ class TriageClaude(unittest.TestCase):  # 003 — T1: parse + DRY_RUN no invoca 
 
     def test_parse_fences(self):
         v = proponer.parse_claude_output('```json\n{"tipo":"empleo","apto":false,"motivo":"x","texto":""}\n```')
-        self.assertEqual(v, {"tipo": "empleo", "apto": False, "motivo": "x", "texto": "", "huecos": []})
+        self.assertEqual(v, {"tipo": "empleo", "apto": False, "motivo": "x", "texto": "", "huecos": [], "pais_empleador": "desconocido", "contratista_ok": False})
 
     def test_parse_envelope(self):
         v = proponer.parse_claude_output(self.ENV)
@@ -317,6 +317,41 @@ class Pendientes(unittest.TestCase):  # 009 — T2 (fixture sintética, sin ids 
         p = metricas.contar_pendientes(json.load(open(self.FX)))
         txt = resumen.resumir([], {"aprobada": 1, "vencida": 2}, p)
         self.assertIn("Pendientes de tu tap: 4", txt); self.assertIn("⏳ Caso sintético A", txt); self.assertIn("vencidas 2", txt)
+
+
+class ContratistaPais(unittest.TestCase):  # 010 — A1/A4/A6
+    def test_parse_pais_contratista(self):
+        v = proponer.parse_claude_output('{"tipo":"empleo","apto":true,"motivo":"m","texto":"t","huecos":[],"pais_empleador":"Colombia","contratista_ok":true}')
+        self.assertEqual((v["pais_empleador"], v["contratista_ok"]), ("Colombia", True))
+        v = proponer.parse_claude_output('{"tipo":"empleo","apto":true,"motivo":"m","texto":"t","huecos":[],"pais_empleador":"","contratista_ok":"sí"}')
+        self.assertEqual((v["pais_empleador"], v["contratista_ok"]), ("desconocido", False))       # inválido → desconocido/False
+        v = proponer.parse_claude_output('{"tipo":"empleo","apto":true,"motivo":"m","texto":"t"}')
+        self.assertEqual((v["pais_empleador"], v["contratista_ok"]), ("desconocido", False))
+
+    def test_regla_contrato_cl_en_prompt(self):
+        self.assertIn("contrato_cl", proponer.REGLAS_TRIAGE); self.assertIn("ROLES PUENTE", proponer.REGLAS_TRIAGE)
+
+    PERFIL = "cómo me presento: Isacc\nModalidad: contratista independiente 100% remoto; cobro por Payoneer, PayPal o Deel."
+
+    def test_modalidad_solo_si_no_es_chile(self):
+        con = proponer.via_plantilla(self.PERFIL, "Soporte Técnico", "saas", tipo="empleo", pais="México")
+        sin = proponer.via_plantilla(self.PERFIL, "Soporte Técnico", "saas", tipo="empleo", pais="Chile")
+        desc = proponer.via_plantilla(self.PERFIL, "Soporte Técnico", "saas", tipo="empleo", pais="desconocido")
+        self.assertIn("Modalidad: contratista", con); self.assertNotIn("Modalidad:", sin); self.assertIn("Modalidad: contratista", desc)
+
+    def test_pipeline_record_campos_010(self):
+        r = proponer.pipeline_record({"id": "x", "title": "t"}, "empleo", "n8n", pais="Chile", contratista=True, puente=True)
+        self.assertEqual((r["pais_empleador"], r["contratista_ok"], r["puente"]), ("Chile", True, True))
+        r = proponer.pipeline_record({"id": "x", "title": "t"}, "empleo", "n8n")
+        self.assertEqual((r["pais_empleador"], r["contratista_ok"], r["puente"]), ("desconocido", False, False))
+
+    def test_resumen_lineas_010(self):
+        import resumen
+        filas = [{"ts": "2026-09-19T09:00:00", "estado": "prefiltro", "motivo": "contrato_cl", "titulo": "a", "fuente": "x"},
+                 {"ts": "2026-09-19T09:00:00", "estado": "triage_no_apto", "motivo": "contrato_cl: exige residencia", "titulo": "b", "fuente": "x"},
+                 {"ts": "2026-09-19T09:00:00", "estado": "entregado", "motivo": "ok", "titulo": "c", "fuente": "x", "puente": True}]
+        txt = resumen.resumir(filas, None, None)
+        self.assertIn("chilenas con contrato local: 2 · puente: 1", txt)
 
 
 if __name__ == "__main__":

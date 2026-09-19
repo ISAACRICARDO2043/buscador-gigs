@@ -18,7 +18,8 @@ def cargar_casos():
 
 
 def as_gig(c):
-    return {"title": c["titulo"], "desc": c["desc"], "location": c["ubicacion"], "lang": c["lang"], "source": c["fuente"]}
+    return {"title": c["titulo"], "desc": c["desc"], "location": c["ubicacion"], "lang": c["lang"], "source": c["fuente"],
+            "countries": c.get("paises", []), "modality": c.get("modalidad", "")}
 
 
 DESC_ES = "Buscamos una persona para automatizar procesos con n8n y Python. Trabajo remoto para el equipo de operaciones."
@@ -55,7 +56,7 @@ class ReglaSeniority(unittest.TestCase):
 
 class ReglaRol(unittest.TestCase):
     def test_bloquea(self):
-        for t, k in (("Desarrollador iOS", "ios"), ("QA Funcional", "qa"), ("ML Engineer (Forecasting)", "ml engineer"), ("Product Marketing Manager", "manager"),
+        for t, k in (("Desarrollador iOS", "ios"), ("ML Engineer (Forecasting)", "ml engineer"), ("Product Marketing Manager", "manager"),
                      ("Desarrollador de Negocio SSR", "desarrollador de negocio"), ("IBM DB2 Application DBA", "dba"), ("Forward Deployed Engineer", "forward deployed")):
             ok, motivo = filtros.prefiltro({"title": t, "desc": DESC_ES})
             self.assertFalse(ok, t); self.assertIn(motivo, ("rol", "seniority"), t)
@@ -63,6 +64,33 @@ class ReglaRol(unittest.TestCase):
     def test_perfil_pasa(self):
         for t in ("Desarrollador de Automatizaciones e IA", "Desarrollador Full-Stack Django + Next.JS", "Ingeniero de Implementación de IA"):
             self.assertEqual(filtros.prefiltro({"title": t, "desc": DESC_ES}), (True, ""), t)
+
+
+class ReglaContratoCL(unittest.TestCase):  # 010 — A1/A2: dato duro de la fuente
+    def test_chile_hibrido_presencial_remoto_local_bloquea(self):
+        for mod in ("hybrid", "no_remote", "remote_local"):
+            self.assertEqual(filtros.prefiltro({"title": "Desarrollador Python", "desc": DESC_ES, "countries": ["Chile"], "modality": mod}), (False, "contrato_cl"), mod)
+
+    def test_chile_fully_remote_no_bloquea_aca(self):  # lo decide el triage con pais_empleador
+        self.assertEqual(filtros.prefiltro({"title": "Desarrollador Python", "desc": DESC_ES, "countries": ["Chile"], "modality": "fully_remote"}), (True, ""))
+
+    def test_otro_pais_hibrido_es_presencial_no_contrato_cl(self):
+        ok, m = filtros.prefiltro({"title": "Desarrollador Python", "desc": DESC_ES, "countries": ["México"], "modality": "hybrid", "location": "híbrido · CDMX"})
+        self.assertFalse(ok); self.assertEqual(m, "presencial")
+
+
+class RolesPuente(unittest.TestCase):  # 010 — A3: puente pasa; Senior puente sigue bloqueado (ausencia + presencia)
+    def test_puente_pasa(self):
+        for t in ("Soporte Técnico de Plataforma SaaS", "Especialista de Implementación y Onboarding", "QA Manual Junior", "Analista de Datos Junior", "Customer Success Técnico"):
+            self.assertEqual(filtros.prefiltro({"title": t, "desc": DESC_ES}), (True, ""), t); self.assertTrue(filtros.es_puente(t), t)
+
+    def test_senior_puente_bloqueado(self):
+        for t in ("Senior QA", "QA Senior Automation", "Soporte Técnico Senior", "Head of Customer Success"):
+            self.assertEqual(filtros.prefiltro({"title": t, "desc": DESC_ES}), (False, "seniority"), t)
+
+    def test_no_puente_sigue_fuera(self):
+        self.assertEqual(filtros.prefiltro({"title": "Diseñador UX", "desc": DESC_ES}), (False, "rol"))
+        self.assertFalse(filtros.prefiltro({"title": "Community Manager", "desc": DESC_ES})[0])
 
 
 class ReglaSinHit(unittest.TestCase):
@@ -104,11 +132,12 @@ class Fixtures(unittest.TestCase):
             if c["etiqueta"] == "apta" and c["origen"] == "isaac" and not c.get("excluido_eval"):
                 self.assertEqual(filtros.prefiltro(as_gig(c)), (True, ""), c["id"])
 
-    def test_excluidos_D1_caen_por_ingles(self):  # D1 (008): inglés = bloqueo duro; los excluidos no son ejemplo ni cuentan
+    def test_excluidos_caen_por_su_regla(self):  # D1 (008) inglés · 010 contrato_cl: los excluidos no son ejemplo ni cuentan
+        esperado = {"ingles_decision_A": "ingles", "contrato_cl_decision": "contrato_cl"}
         for c in cargar_casos():
             if c.get("excluido_eval"):
-                self.assertEqual(c.get("motivo_exclusion"), "ingles_decision_A", c["id"])
-                self.assertEqual(filtros.prefiltro(as_gig(c)), (False, "ingles"), c["id"])
+                self.assertIn(c.get("motivo_exclusion"), esperado, c["id"])
+                self.assertEqual(filtros.prefiltro(as_gig(c)), (False, esperado[c["motivo_exclusion"]]), c["id"])
 
 
 if __name__ == "__main__":

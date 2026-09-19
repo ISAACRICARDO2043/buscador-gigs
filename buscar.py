@@ -143,7 +143,8 @@ def gig(source, jid, title, company, url, location, hits, geo_desc=""):
             "geo": geo_status(location, title, geo_desc), "hits": hits,
             "desc": (geo_desc or "")[:4000],  # para auto-redactar la propuesta
             "esp": spanish_friendly(blob, source), "en": needs_english(blob),
-            "lang": ""}  # idioma del aviso si la fuente lo da (GetOnBrd); "" = heurística en filtros
+            "lang": "",  # idioma del aviso si la fuente lo da (GetOnBrd); "" = heurística en filtros
+            "countries": [], "modality": ""}  # 010: país/modalidad duros de la fuente (GetOnBrd) para contrato_cl
 
 
 def sig_of(g):
@@ -230,13 +231,15 @@ def from_wwr():
 
 
 # GetOnBrd: board chileno, gigs en español. Buscamos por términos de automatización.
+# 010 (A3): + roles puente
+GETONBRD_QUERIES_PUENTE = ["soporte técnico", "implementación", "onboarding", "qa manual", "analista de datos", "help desk", "customer success"]
 GETONBRD_QUERIES = ["automatizacion", "n8n", "zapier", "make.com", "scraping",
                     "chatbot", "whatsapp", "integracion api", "rpa", "no-code"]
 
 
 def from_getonbrd():
     out, local_seen = [], set()
-    for q in GETONBRD_QUERIES:
+    for q in GETONBRD_QUERIES + GETONBRD_QUERIES_PUENTE:
         try:
             url = "https://www.getonbrd.com/api/v0/search/jobs?" + urllib.parse.urlencode(
                 {"query": q, "per_page": 20})
@@ -266,6 +269,8 @@ def from_getonbrd():
                 loc += " · Santiago"
             g = gig("GetOnBrd", jid, title, "", url_pub, loc, (s + w) or [q], geo_desc=desc)
             g["lang"] = "" if a.get("lang") in (None, "", "lang_not_specified") else a.get("lang")
+            g["countries"] = list(a.get("countries") or [])          # 010 (A2): dato duro para contrato_cl
+            g["modality"] = modality
             if a.get("lang") == "en":  # 005: aviso publicado en inglés = "Requires applying in English" (badge de la UI)
                 g["en"], g["esp"] = True, False
             # board LATAM/español: si la geo no se reconoce, tratarla como ok (no bloqueado)
@@ -276,7 +281,8 @@ def from_getonbrd():
     return out
 
 
-JOBICY_TAGS = ["automation", "n8n", "scraping", "chatbot", "api", "no-code", "rpa"]
+JOBICY_TAGS = ["automation", "n8n", "scraping", "chatbot", "api", "no-code", "rpa",
+               "technical-support", "customer-success", "qa", "data-analyst"]   # 010 (A3): puente
 
 
 def from_jobicy():
@@ -365,21 +371,24 @@ def tg_send(text):
 def proponer_gig(g, perfil):
     """Triage + entrega de UN gig. Devuelve 'entregado' | 'descartado' | 'plantilla' | 'fallo'.
     apto=false → no se entrega. redactar()=None (claude ausente/falló/DRY_RUN) → plantilla (D13)."""
-    v = proponer.redactar(perfil, g["title"], g.get("desc", ""), g["source"])
+    v = proponer.redactar(perfil, g["title"], g.get("desc", ""), g["source"], pais=g.get("countries") or None)
     if v is not None and not v["apto"]:
-        proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"], "", estado="triage_no_apto", motivo=v["motivo"], huecos=v.get("huecos")))
+        proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"], "", estado="triage_no_apto", motivo=v["motivo"], huecos=v.get("huecos"),
+                                                       pais=v.get("pais_empleador"), contratista=v.get("contratista_ok"), puente=filtros.es_puente(g["title"])))
         return "descartado"
     if v is not None:
         texto, res = v["texto"], "entregado"
     else:
-        texto, res = proponer.via_plantilla(perfil, g["title"], g.get("desc", ""), tipo="empleo" if g["source"] != "prueba" else "proyecto"), "plantilla"
+        pais_g = (g.get("countries") or [""])[0] or "desconocido"
+        texto, res = proponer.via_plantilla(perfil, g["title"], g.get("desc", ""), tipo="empleo" if g["source"] != "prueba" else "proyecto", pais=pais_g), "plantilla"
     via = proponer.deliver(g["title"], g["url"], texto, g["company"], g["source"])
     if not via:
         proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"] if v else "plantilla", "", estado="fallo_entrega", motivo="deliver=False"))
         return "fallo"
     proponer.log_pipeline(proponer.pipeline_record(g, v["tipo"] if v else "plantilla", via,
                                                    estado="entregado" if v else "entregado_plantilla", motivo=(v or {}).get("motivo", ""),
-                                                   huecos=(v or {}).get("huecos")))
+                                                   huecos=(v or {}).get("huecos"), pais=(v or {}).get("pais_empleador"),
+                                                   contratista=(v or {}).get("contratista_ok"), puente=filtros.es_puente(g["title"])))
     return res
 
 
@@ -431,7 +440,8 @@ def main():
             if not ok:
                 prefiltrados += 1
                 por_motivo[motivo] = por_motivo.get(motivo, 0) + 1
-                proponer.log_pipeline(proponer.pipeline_record(g, "", "", estado="prefiltro", motivo=motivo))
+                proponer.log_pipeline(proponer.pipeline_record(g, "", "", estado="prefiltro", motivo=motivo, puente=filtros.es_puente(g["title"]),
+                                                               pais=(g.get("countries") or [""])[0] or ""))
                 seen_ids.add(g["id"])
                 continue
             if triados >= triage_max:
