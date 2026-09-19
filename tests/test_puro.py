@@ -209,9 +209,10 @@ class Metricas(unittest.TestCase):  # 005 — T4 metricas.py (funciones puras + 
         f = Path(tempfile.mkdtemp()) / "p.jsonl"
         f.write_text("\n".join(json.dumps(r) for r in [
             {"ts": "2026-09-14T10:00:00", "via": "n8n"}, {"ts": "2026-09-15T10:00:00", "via": "telegram"},
+            {"ts": "2026-09-15T11:00:00", "via": "", "estado": "prefiltro", "motivo": "ingles"},        # 007+: no es envío
             {"ts": "2026-09-21T10:00:00", "via": "n8n"}]) + "\n")
         m = metricas.enviadas_por_semana(f)
-        self.assertEqual(m["2026-W38"], {"enviadas": 2, "n8n": 1, "telegram": 1}); self.assertEqual(m["2026-W39"]["enviadas"], 1)
+        self.assertEqual(m["2026-W38"], {"nuevos": 3, "enviadas": 2, "n8n": 1, "telegram": 1}); self.assertEqual(m["2026-W39"]["enviadas"], 1)
         self.assertEqual(metricas.enviadas_por_semana(f.parent / "nada.jsonl"), {})
 
     def test_decisiones_por_semana(self):

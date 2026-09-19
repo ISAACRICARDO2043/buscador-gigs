@@ -34,6 +34,9 @@ def enviadas_por_semana(path=PIPELINE):
         except Exception:
             continue
         s = semana(r["ts"])
+        out[s]["nuevos"] += 1
+        if not (r.get("estado") or "entregado").startswith("entregado"):   # 007+: el pipeline también registra prefiltro/no aptos
+            continue
         out[s]["enviadas"] += 1
         out[s][r.get("via", "?")] += 1
     return {k: dict(v) for k, v in sorted(out.items())}
@@ -201,7 +204,7 @@ def main():
     if not env:
         print("  (sin entregas registradas todavía)")
     for s, c in env.items():
-        print(f"  {s}: enviadas={c.get('enviadas', 0)} n8n={c.get('n8n', 0)} telegram={c.get('telegram', 0)}")
+        print(f"  {s}: nuevos={c.get('nuevos', 0)} enviadas={c.get('enviadas', 0)} n8n={c.get('n8n', 0)} telegram={c.get('telegram', 0)}")
     rows = None
     if os.environ.get("N8N_API_URL") and os.environ.get("N8N_API_KEY"):
         rows = _rows_api(os.environ["N8N_API_URL"].rstrip("/"), os.environ["N8N_API_KEY"])
